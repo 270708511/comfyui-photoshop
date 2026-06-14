@@ -4,3 +4,4 @@ Install_Plugin/__pycache__
 Install_Plugin/plugincode
 data/ps_inputs
 
+.DS_Store
