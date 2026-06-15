@@ -72,8 +72,8 @@ async def save_config(data):
 async def send_message(users, type, message=True):
     try:
         if not users:
-            print("# PS: PS not connected")
-            return "PS not connected"
+            print("# PS: no connected client on the target channel")
+            return "no connected client"
 
         latest_user = users[-1]
         if latest_user in clients:

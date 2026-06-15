@@ -11,12 +11,20 @@ from io import BytesIO
 import folder_paths
 import torchvision.transforms.functional as tf
 import aiohttp
+from server import PromptServer
 
 
 
 nodepath = os.path.join(
     folder_paths.get_folder_paths("custom_nodes")[0], "comfyui-photoshop"
 )
+
+
+def get_comfyui_base_url():
+    port = getattr(getattr(PromptServer, "instance", None), "port", None)
+    if not port:
+        port = os.environ.get("COMFYUI_PORT", "8188")
+    return f"http://127.0.0.1:{port}"
 
 
 def is_changed_file(filepath):
@@ -165,7 +173,7 @@ class ComfyUIToPhotoshop(SaveImage):
 
     async def connect_to_backend(self, filename):
         try:
-            url = f"http://127.0.0.1:8188/ps/renderdone?filename={filename}"
+            url = f"{get_comfyui_base_url()}/ps/renderdone?filename={filename}"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     return await response.text()

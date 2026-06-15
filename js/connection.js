@@ -3,7 +3,9 @@ let listeners = {};
 
 function connect() {
   try {
-    socket = new WebSocket("ws://" + window.location.hostname + ":8188/ps/ws?platform=cm&clientId=" + generateClientId());
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsBaseUrl = `${wsProtocol}//${window.location.host}`;
+    socket = new WebSocket(`${wsBaseUrl}/ps/ws?platform=cm&clientId=${generateClientId()}`);
 
     socket.addEventListener("open", () => {
       console.log("🔹 Connected to the server.");
