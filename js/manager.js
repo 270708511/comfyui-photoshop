@@ -68,11 +68,12 @@ const SwitcherWidgetNames = (switcher) => {
     let widgetNames = [];
     let widgets = switcher.widgets;
     widgets.forEach((widget) => {
-      if (widget.value) {
-        widgetNames.push({ name: String(widget.name.replace("Enable ", "")), selected: true });
-      } else {
-        widgetNames.push({ name: String(widget.name.replace("Enable ", "")) });
-      }
+      const label = String(widget.label || widget.name || "").replace(/^Enable /, "");
+      const selected =
+        widget.value && typeof widget.value === "object" && "toggled" in widget.value
+          ? Boolean(widget.value.toggled)
+          : Boolean(widget.value);
+      widgetNames.push(selected ? { name: label, selected: true } : { name: label });
     });
     return widgetNames;
   } catch (error) {

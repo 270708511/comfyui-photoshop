@@ -1,0 +1,20 @@
+{
+  "name": "comfyui-photoshop-uxp",
+  "version": "1.9.3",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.1.0",
+    "svelte": "^4.2.18",
+    "vite": "^5.3.1"
+  },
+  "dependencies": {
+    "gsap": "^3.12.5",
+    "i18next": "^23.11.5"
+  }
+}

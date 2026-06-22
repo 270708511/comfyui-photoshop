@@ -1,6 +1,6 @@
 {
-	"id": "3e6d64e0",
-	"name": "Comfyui Photoshop",
+	"id": "comfyui.photoshop.team",
+	"name": "ComfyUI Photoshop Team",
 	"version": "1.9.3",
 	"main": "index.html",
 	"manifestVersion": 6,
@@ -11,7 +11,7 @@
 	"entrypoints": [
 		{
 			"type": "panel",
-			"id": "comfyui.photoshop.plugin.panel",
+			"id": "comfyui.photoshop.team.panel",
 			"label": {
 				"default": "Ai Panel"
 			},
@@ -53,7 +53,7 @@
 		},
 		{
 			"type": "panel",
-			"id": "comfyui.photoshop.plugin.settings",
+			"id": "comfyui.photoshop.team.settings",
 			"label": {
 				"default": "Settings"
 			},
@@ -98,7 +98,7 @@
 		},
 		{
 			"type": "panel",
-			"id": "comfyui.photoshop.plugin.web",
+			"id": "comfyui.photoshop.team.web",
 			"label": {
 				"default": "ComfyUI Web"
 			},

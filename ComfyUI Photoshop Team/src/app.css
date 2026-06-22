@@ -1,0 +1,125 @@
+/* Global CSS for the UXP plugin — matches original plugin styles */
+
+:root {
+  --font-family: "Arial", sans-serif;
+  --color-white: #cccccc;
+  --color-light-gray: #b9b9b9;
+  --color-dark-gray: #262627;
+  --color-dark2-gray: #1a1a1a;
+  --color-darker-gray: black;
+  --color-hover-gray: #303031;
+  --color-accent-gray: #6f6f6f;
+  --color-placeholder-gray: #afafaf;
+  --color-progress-bar: rgb(80, 151, 227);
+  --color-progress-bar-bg: linear-gradient(270deg, rgba(218, 218, 218, .5) 13.09%, rgba(255, 255, 255, .2) 100%);
+  --border-radius-s: 2px;
+  --border-radius-m: 18px;
+  --border-radius-l: 24px;
+  --padding-small: 4px;
+  --padding-medium: 8px;
+  --padding-large: 12px;
+  --font-size-small: 10px;
+  --font-size-medium: 12px;
+  --font-size-large: 20px;
+  --bg-darkest: #252525;
+}
+
+:root,
+uxp-panel {
+  line-height: 1.2;
+  font-weight: 400;
+  color-scheme: light dark;
+  color: #ffffffde;
+  background-color: #242424;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  font-family: var(--font-family);
+  color: var(--color-white);
+}
+
+.hidden {
+  display: none !important;
+}
+
+body {
+  cursor: default;
+  display: flex;
+  justify-content: center;
+  background-size: cover;
+  background-position: center;
+}
+
+/* The mount target — must fill available space */
+#app {
+  width: 100%;
+  height: 100%;
+}
+
+/* Icon hover effects */
+.icon {
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.icon:hover {
+  background: var(--color-hover-gray);
+}
+
+.icon svg {
+  pointer-events: none;
+}
+
+.icon:hover svg {
+  fill: #a8a8a8;
+}
+
+.icon:hover svg path {
+  fill: #a8a8a8;
+}
+
+/* Common layout */
+.discrip {
+  font-size: var(--font-size-medium);
+  color: #969696;
+  font-weight: 200;
+  width: fit-content;
+  margin-bottom: 0;
+}
+
+.discrip:hover {
+  color: #cacaca;
+}
+
+.blackbg {
+  background: var(--color-darker-gray);
+  border-radius: var(--border-radius-l);
+  padding: var(--padding-medium);
+}
+
+.style-containerBG {
+  border-radius: var(--border-radius-l);
+  background: #000;
+  padding: var(--padding-medium);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  border: none;
+  color: inherit;
+}
+
+.settinglist > * {
+  margin-bottom: var(--padding-small);
+  width: 100%;
+}
+
+.settinglist > *:last-child {
+  margin-bottom: 0;
+  border-bottom-left-radius: var(--border-radius-m);
+  border-bottom-right-radius: var(--border-radius-m);
+}

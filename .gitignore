@@ -1,7 +1,22 @@
-py/__pycache__
+*/__pycache__
+*/node_modules
+*/.vscode/
+*/.idea/
+*.ini
+*.log
+*.bak
+*.tmp
+*.cache
+*.DS_Store
+*.psd
+*.psb
+
+.workbuddy
 __pycache__
-Install_Plugin/__pycache__
 Install_Plugin/plugincode
 /data/ps_inputs
 
-.DS_Store
+
+data/ps_inputs/config.json
+data/ps_inputs/PS_canvas.png
+data/ps_inputs/PS_mask.png
