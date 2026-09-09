@@ -33,26 +33,12 @@ addListener("alert", (data) => {
   }
 });
 
-addListener("queue", (data) => {
-  try {
-    if (!isProcessing) {
-      if (photoshopNode.length > 0) {
-        isProcessing = true;
-        (function processQueue() {
-          if (genrateStatus == "genrated") {
-            app.queuePrompt();
-            isProcessing = false;
-          } else {
-            setTimeout(processQueue, 100);
-          }
-        })();
-      } else {
-        console.log("🔹 Photoshop Node doesn't Exist");
-      }
-    }
-  } catch (error) {
-    console.error("🔹 Error in queue listener:", error);
-  }
+addListener("queue", async () => {
+  if (isProcessing || !photoshopNode.length) return;
+  isProcessing = true;
+  try { await app.queuePrompt(0, 1); }
+  catch (error) { sendMsg("alert", "Workflow submit failed: " + error); }
+  finally { isProcessing = false; }
 });
 
 addListener("rndrMode", (data) => {
@@ -192,7 +178,7 @@ api.addEventListener("execution_start", ({ detail }) => {
 });
 api.addEventListener("executing", ({ detail }) => {
   try {
-    if (!detail) {
+    if (!detail || detail.node === null) {
       genrateStatus = "genrated";
       isProcessing = false;
       sendMsg("render_status", "genrated");
@@ -203,7 +189,8 @@ api.addEventListener("executing", ({ detail }) => {
 });
 api.addEventListener("execution_error", ({ detail }) => {
   try {
-    genrateStatus = "genrate_error";
+    genrateStatus = "genrated";
+    isProcessing = false;
     sendMsg("render_status", "genrate_error");
   } catch (error) {
     console.error("🔹 Error in execution_error listener:", error);

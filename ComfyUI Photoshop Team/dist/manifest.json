@@ -35,7 +35,7 @@
 				{
 					"width": 23,
 					"height": 23,
-					"path": "icons/dark.png",
+					"path": "Icons/dark.png",
 					"scale": [
 						1,
 						2
@@ -77,7 +77,7 @@
 				{
 					"width": 23,
 					"height": 23,
-					"path": "icons/settings.png",
+					"path": "Icons/settings.png",
 					"scale": [
 						1,
 						2
@@ -122,7 +122,7 @@
 				{
 					"width": 23,
 					"height": 23,
-					"path": "icons/comfy.png",
+					"path": "Icons/comfy.png",
 					"scale": [
 						1,
 						2
@@ -178,7 +178,7 @@
 		{
 			"width": 48,
 			"height": 48,
-			"path": "icons/dark.png",
+			"path": "Icons/dark.png",
 			"scale": [
 				1,
 				2

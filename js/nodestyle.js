@@ -1,3 +1,4 @@
+import { teamMode, teamPreview } from "./team.js";
 import { connect, sendMsg } from "./connection.js";
 import { loadWorkflow, nodever } from "./manager.js";
 import { app as app } from "../../../scripts/app.js";
@@ -7,11 +8,11 @@ export let photoshopNode = [];
 let setupdone = false;
 let connectdone = false;
 let disabledrow = false;
-const canvasImage = await api.fetchApi(`/ps/inputs/PS_canvas.png`);
-const maskImage = await api.fetchApi(`/ps/inputs/PS_mask.png`);
+const canvasImage = teamMode ? { get url() { return teamPreview.canvas; } } : await api.fetchApi(`/ps/inputs/PS_canvas.png`);
+const maskImage = teamMode ? { get url() { return teamPreview.mask; } } : await api.fetchApi(`/ps/inputs/PS_mask.png`);
 
 function setBackgroundImageContain(node, canvasUrl, maskUrl) {
-  if (node.mode === 2) {
+  if (node.mode === 2 || !canvasUrl || !maskUrl) {
     return;
   }
 
@@ -73,8 +74,8 @@ function setBackgroundImageContain(node, canvasUrl, maskUrl) {
 
 async function previewonthenode(node) {
   const timestamp = new Date().getTime();
-  const canvasImageUrl = `${canvasImage.url}?v=${timestamp}`;
-  const maskImageUrl = `${maskImage.url}?v=${timestamp}`;
+  const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
+  const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
   setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
 }
 
@@ -127,11 +128,11 @@ async function addBooleanProperty(node) {
   node.properties = createWatchedObject(properties, async (property, newValue) => {
     if (property === "Disable Preview") {
       const timestamp = new Date().getTime();
-      const canvasImageUrl = `${canvasImage.url}?v=${timestamp}`;
-      const maskImageUrl = `${maskImage.url}?v=${timestamp}`;
+      const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
+      const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
       setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
-      console.log("canvasImageUrl: ", canvasImageUrl);
-      console.log("maskImageUrl: ", maskImageUrl);
+      if (!teamMode) console.log("canvasImageUrl: ", canvasImageUrl);
+      if (!teamMode) console.log("maskImageUrl: ", maskImageUrl);
     }
   });
 }
@@ -268,3 +269,5 @@ function addButton(node, btntxt, class__name, func) {
     console.error("🔹 Error in addButton:", error);
   }
 }
+
+window.addEventListener("ps-team-input", () => photoshopNode.forEach(node => previewonthenode(node)));

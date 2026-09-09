@@ -3,9 +3,7 @@ import os
 import folder_paths
 
 # Define the path to the 'py' directory
-py = os.path.join(
-    folder_paths.get_folder_paths("custom_nodes")[0], "comfyui-photoshop", "py"
-)
+py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "py")
 
 # List of modules
 node_list = ["nodePlugin", "nodeRemoteConnection"]

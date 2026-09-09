@@ -1,7 +1,10 @@
+import { teamMode, startTeam, teamSend } from "./team.js";
 let socket = null;
 let listeners = {};
 
+let started = false;
 function connect() {
+  if (teamMode) { if (!started) { started = true; startTeam(handleMessage); } return; }
   try {
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsBaseUrl = `${wsProtocol}//${window.location.host}`;
@@ -53,6 +56,7 @@ function handleMessage(message) {
 }
 
 function sendMsg(type, data) {
+  if (teamMode) { teamSend(type, data); return; }
   if (!data) data = true;
   try {
     if (socket && socket.readyState === WebSocket.OPEN) {

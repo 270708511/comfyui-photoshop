@@ -1,8 +1,12 @@
 from nodes import SaveImage
+from server import PromptServer
 import hashlib
+import asyncio
 import json
 import base64
 import os
+import re
+from pathlib import Path
 import time
 import torch
 import numpy as np
@@ -11,20 +15,25 @@ from io import BytesIO
 import folder_paths
 import torchvision.transforms.functional as tf
 import aiohttp
-from server import PromptServer
 
 
 
-nodepath = os.path.join(
-    folder_paths.get_folder_paths("custom_nodes")[0], "comfyui-photoshop"
-)
+nodepath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def get_comfyui_base_url():
-    port = getattr(getattr(PromptServer, "instance", None), "port", None)
-    if not port:
-        port = os.environ.get("COMFYUI_PORT", "8188")
-    return f"http://127.0.0.1:{port}"
+def team_snapshot(extra_pnginfo):
+    meta = (extra_pnginfo or {}).get("ps_team")
+    if meta is None:
+        return None
+    if not isinstance(meta, dict) or meta.get("version") != "ps-team-1" or not re.fullmatch(r"[a-f0-9]{32}", str(meta.get("snapshot_id", ""))):
+        raise ValueError("Invalid Photoshop team snapshot metadata")
+    root = os.environ.get("PS_TEAM_INPUT_ROOT")
+    if not root:
+        raise ValueError("PS_TEAM_INPUT_ROOT is required on this render worker")
+    directory = Path(root).resolve() / meta["snapshot_id"]
+    if not all((directory / name).is_file() for name in ("PS_canvas.png", "PS_mask.png", "config.json")):
+        raise ValueError("Photoshop team snapshot is incomplete")
+    return directory
 
 
 def is_changed_file(filepath):
@@ -46,15 +55,22 @@ def is_changed_file(filepath):
 class PhotoshopToComfyUI:
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}
+        return {"required": {}, "hidden": {"extra_pnginfo": "EXTRA_PNGINFO"}}
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "INT", "STRING", "STRING", "INT", "INT")
     RETURN_NAMES = ("Canvas", "Mask", "Slider", "Seed", "+", "-", "W", "H")
     FUNCTION = "PS_Execute"
     CATEGORY = "Photoshop"
 
-    def PS_Execute(self):
-        self.LoadDir()
+    def PS_Execute(self, extra_pnginfo=None):
+        directory = team_snapshot(extra_pnginfo)
+        self.team_mode = directory is not None
+        if directory:
+            self.canvasDir = str(directory / "PS_canvas.png")
+            self.maskImgDir = str(directory / "PS_mask.png")
+            self.configJson = str(directory / "config.json")
+        else:
+            self.LoadDir()
         self.loadConfig()
         self.SendImg()
 
@@ -131,12 +147,17 @@ class PhotoshopToComfyUI:
             self.i.verify()
             self.i = Image.open(BytesIO(img_data))
         except:
+            if getattr(self, "team_mode", False):
+                raise ValueError("Photoshop team snapshot image is unreadable")
             self.i = Image.new(mode="RGB", size=(24, 24), color=(0, 0, 0))
         if not self.i:
             return
 
     @classmethod
-    def IS_CHANGED(cls):
+    def IS_CHANGED(cls, extra_pnginfo=None):
+        directory = team_snapshot(extra_pnginfo)
+        if directory:
+            return directory.name
         try:
             configJson = os.path.join(nodepath, "data", "ps_inputs", "config.json")
             canvasDir = os.path.join(nodepath, "data", "ps_inputs", "PS_canvas.png")
@@ -168,12 +189,14 @@ class ComfyUIToPhotoshop(SaveImage):
             "hidden": {"prompt": "PROMPT", "extra_pnginfo": "EXTRA_PNGINFO"},
         }
 
+    RETURN_TYPES = ("IMAGE",)
     FUNCTION = "execute"
     CATEGORY = "Photoshop"
 
     async def connect_to_backend(self, filename):
         try:
-            url = f"{get_comfyui_base_url()}/ps/renderdone?filename={filename}"
+            port = getattr(getattr(PromptServer, "instance", None), "port", None) or os.environ.get("COMFYUI_PORT", "8188")
+            url = f"http://127.0.0.1:{port}/ps/renderdone?filename={filename}"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as response:
                     return await response.text()
@@ -187,9 +210,19 @@ class ComfyUIToPhotoshop(SaveImage):
         prompt=None,
         extra_pnginfo=None,
     ):
+        directory = team_snapshot(extra_pnginfo)
+        if directory:
+            self.output_dir = folder_paths.get_output_directory()
+            self.type = "output"
+            filename_prefix = "ps_team/" + directory.name + "/PS_OUTPUTS"
+        else:
+            self.output_dir = folder_paths.get_temp_directory()
+            self.type = "temp"
         x = self.save_images(output, filename_prefix, prompt, extra_pnginfo)
-        await self.connect_to_backend(x["ui"]["images"][0]["filename"])
-        return x
+        if not directory:
+            await self.connect_to_backend(x["ui"]["images"][0]["filename"])
+        return {"ui": x["ui"], "result": (output,)}
+
 
 
 class ClipPass:

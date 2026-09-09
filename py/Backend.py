@@ -10,17 +10,9 @@ import folder_paths
 from server import PromptServer
 
 # Set up paths
-nodepath = os.path.join(
-    folder_paths.get_folder_paths("custom_nodes")[0],
-    "comfyui-photoshop",
-)
+nodepath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 workflows_directory = os.path.join(nodepath, "data", "workflows")
-ps_inputs_directory = os.path.join(
-    folder_paths.get_folder_paths("custom_nodes")[0],
-    "comfyui-photoshop",
-    "data",
-    "ps_inputs",
-)
+ps_inputs_directory = os.path.join(nodepath, "data", "ps_inputs")
 
 clients = {}
 photoshop_users = []
