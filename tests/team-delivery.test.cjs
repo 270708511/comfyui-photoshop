@@ -13,12 +13,12 @@ function frontend(fetch, graph = async () => ({output: {node: {}}, workflow: {no
   const host = {postMessage: message => messages.push(clone(message))};
   const context = vm.createContext({location: {hostname: 'team.example'}, app: {graphToPrompt: graph},
     window: {uxpHost: host, addEventListener: (type, fn) => listeners.push(fn), dispatchEvent() {}},
-    fetch, console, CustomEvent: class {}, setTimeout: fn => {timers.set(++timerID, fn); return timerID;}, clearTimeout: id => timers.delete(id),
+    fetch, console, URLSearchParams, CustomEvent: class {}, setTimeout: fn => {timers.set(++timerID, fn); return timerID;}, clearTimeout: id => timers.delete(id),
     FileReader: class {readAsDataURL() {this.result = 'data:image/png;base64,IMAGE'; this.onload();}}});
   let source = fs.readFileSync(path.join(root, 'js/team.js'), 'utf8').replace(/^import .*\n/, '').replace(/export /g, '');
   vm.runInContext(source + '\nthis.start = startTeam;', context); context.start(() => {});
   const emit = async (message, extra = {}) => {
-    const event = {source: host, origin: 'comfyui.photoshop.team', data: {protocol: 'ps-team-1', panel: 'PANEL', session_id: 'SESSION', ...message}, ...extra};
+    const event = {source: host, origin: 'comfyui.photoshop.team', data: {protocol: 'ps-team-1', transport: 'company', panel: 'PANEL', session_id: 'SESSION', ...message}, ...extra};
     await Promise.all(listeners.map(fn => fn(event))); await settle();
   };
   return {messages, emit, context, timers, tick: async () => {const ready = [...timers.values()]; timers.clear(); ready.forEach(fn => fn()); await settle();}};
@@ -111,7 +111,7 @@ function panelHarness(storage = {value: null}, custom = {}) {
   const context = vm.createContext({console, URL, setInterval() {}, document: {querySelector: () => view}, window: {addEventListener: (type, fn) => {handler = fn;}}});
   vm.runInContext(fs.readFileSync(path.join(root, 'ComfyUI Photoshop Team/dist/ps-team-bridge.js'), 'utf8'), context);
   const bridge = context.createPSTeamBridge(hooks);
-  const emit = async data => {await handler({source: view, origin: 'https://team.example', data: {protocol: 'ps-team-1', panel: messages[0].panel, session_id: 'A', ...data}}); await settle();};
+  const emit = async data => {await handler({source: view, origin: 'https://team.example', data: {protocol: 'ps-team-1', transport: 'company', panel: messages[0].panel, session_id: 'A', ...data}}); await settle();};
   return {bridge, storage, messages, previews, statuses, viewEvents, hooks, emit,
     setDoc: id => {doc = {id};}, setBounds: value => {bounds = value;},
     connect: async (session = 'A') => {await bridge.connect('https://team.example'); await emit({type: 'ready', session_id: session});},

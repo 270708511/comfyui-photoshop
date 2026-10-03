@@ -1,10 +1,12 @@
-import { teamMode, startTeam, teamSend } from "./team.js";
+import { usesTeamBridge, teamMode, startTeam, teamSend } from "./team.js";
 let socket = null;
 let listeners = {};
 
 let started = false;
+window.addEventListener('ps-plugin-bound', () => { if (socket) { socket.close(); socket = null; } });
 function connect() {
-  if (teamMode) { if (!started) { started = true; startTeam(handleMessage); } return; }
+  if (!started) { started = true; startTeam(handleMessage); }
+  if (usesTeamBridge() || teamMode) return;
   try {
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsBaseUrl = `${wsProtocol}//${window.location.host}`;
@@ -25,7 +27,7 @@ function connect() {
 
     socket.addEventListener("close", (event) => {
       console.warn("🔹 Connection closed. Reconnecting...", event);
-      setTimeout(connect, 5000);
+      if (!usesTeamBridge() && !teamMode) setTimeout(connect, 5000);
     });
 
     socket.addEventListener("error", (error) => {

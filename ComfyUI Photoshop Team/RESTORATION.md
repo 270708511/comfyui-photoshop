@@ -44,7 +44,7 @@ the team protocol.
 Run from the repository root:
 
 ```sh
-node --test tests/team-delivery.test.cjs
+node --test tests/*.cjs
 python -m unittest discover -s tests -p 'test_*.py'
 node --check 'ComfyUI Photoshop Team/dist/ps-team-bridge.js'
 node --check 'ComfyUI Photoshop Team/dist/assets/index-B_-tWO9a.js'
@@ -110,3 +110,57 @@ no output is inserted into a similarly numbered unrelated document after restart
 
 The dialog implementation follows Adobe's documented `uxpShowModal`/`close` API:
 https://developer.adobe.com/uxp/guides/how-to/add-modal-dialogs/
+
+### Company and standalone deployment modes
+
+The uploaded standalone `ps_plugin` capability is preserved alongside the company
+adapter. Remote Photoshop Web panels default to **company** transport. They use
+only owner-checked `/ps/team` sessions, immutable snapshots, reconciled submission,
+server-retained results and durable per-image ACKs. An unavailable adapter, 404,
+401/403, malformed reply, or 5xx never switches the transport automatically.
+
+For a deliberately separate installation **without the company adapter**, set the
+Photoshop server URL (and therefore its Web panel URL) to, for example,
+`https://standalone.example/?ps_transport=standalone`, then apply and reconnect.
+Standalone mode first performs two read-only probes: `/ps/team/capabilities` and
+`/ps/team/sessions`. Both must return 404. Any other result or network failure
+blocks the binding; the second probe detects older company adapters whose
+POST-only session collection returns 405 even without a capabilities route.
+These absence checks are conservative compatibility checks, not authentication
+boundaries. Do not route/filter them to make a company deployment appear absent.
+Company servers also reject `ps_plugin` on ordinary prompt submission, and
+`PS_TEAM_REQUIRED=1` workers reject standalone metadata.
+
+Standalone retains upstream standard multipart `/upload/image`, `/prompt`,
+`/history/{prompt_id}`, optional scheduler `/jobs/{prompt_id}`, and `/view` delivery.
+It still requires a same-origin authenticated `/auth/whoami` response with
+`authenticated: true` and `username`. Upload-returned names are authoritative;
+canvas and mask must both succeed before submission. Only matching SendTo output
+paths are retrieved, with Windows path separators normalized and absolute,
+traversal, UNC, or other-snapshot paths rejected. Loopback UXP hosts retain the
+legacy socket/preview behavior, and ordinary browser visits do not bind the UXP
+bridge. Remote unbinding clears node preview pixels, including late image loads.
+
+Both transports use the durable Photoshop insertion journal, strict
+panel/origin/session/transport messages, soft `received` receipts, and confirmed
+post-insertion `ack`/`acknowledged` exchanges. Their journal connection identities
+are separate, so changing transport cannot reinterpret another mode's jobs.
+Standalone mappings are stored per account and session in WebView sessionStorage;
+logout retains the old account's mapping for A→B→A recovery without exposing its
+results to B. ACK confirmation occurs only after the mapping write succeeds.
+
+Standalone does **not** provide company-grade server ownership or durable
+submission reconciliation. A lost `/prompt` response stays unknown and never
+reposts automatically. If WebView storage is cleared/recreated while the
+Photoshop journal retains pending work for that account, reconnect fails visibly
+with the journal intact; restore the original WebView storage or manually inspect
+server history before operator recovery. It does not silently create a new ready
+session. Standalone cancellation is not sent through a shared/global queue API;
+use the server's task history. Do not use standalone as a substitute for the
+owner-isolated company deployment in a shared service.
+
+The merged Node suite includes actual frontend↔UXP protocol integration in two
+VM realms. HTTP responses and Adobe/browser hosting are simulated; no GPU is
+needed. It covers both delivery modes, lost ACK recovery, uncertainty review,
+forged identities, and fail-closed transport selection. Real-host acceptance
+checks above remain required.

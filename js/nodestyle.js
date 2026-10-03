@@ -1,4 +1,4 @@
-import { teamMode, teamPreview } from "./team.js";
+import { usesTeamBridge, teamMode, teamPreview } from "./team.js";
 import { connect, sendMsg } from "./connection.js";
 import { loadWorkflow, nodever } from "./manager.js";
 import { app as app } from "../../../scripts/app.js";
@@ -8,11 +8,15 @@ export let photoshopNode = [];
 let setupdone = false;
 let connectdone = false;
 let disabledrow = false;
-const canvasImage = teamMode ? { get url() { return teamPreview.canvas; } } : await api.fetchApi(`/ps/inputs/PS_canvas.png`);
-const maskImage = teamMode ? { get url() { return teamPreview.mask; } } : await api.fetchApi(`/ps/inputs/PS_mask.png`);
+
 
 function setBackgroundImageContain(node, canvasUrl, maskUrl) {
+  const generation = (node.psPreviewGeneration || 0) + 1;
+  node.psPreviewGeneration = generation;
+  const current = () => node.psPreviewGeneration === generation;
   if (node.mode === 2 || !canvasUrl || !maskUrl) {
+    node.onDrawBackground = null; node.onResize = null;
+    node.setDirtyCanvas(true, true);
     return;
   }
 
@@ -27,7 +31,9 @@ function setBackgroundImageContain(node, canvasUrl, maskUrl) {
 
   Promise.all([fetchImage(canvasUrl), fetchImage(maskUrl)])
     .then(([canvasImg, maskImg]) => {
+      if (!current()) return;
       const drawImage = () => {
+        if (!current()) return;
         if (!disabledrow) {
           if (node.properties && node.properties["Disable Preview"]) {
             node.onDrawBackground = null;
@@ -66,6 +72,7 @@ function setBackgroundImageContain(node, canvasUrl, maskUrl) {
       node.onResize = drawImage;
     })
     .catch((error) => {
+      if (!current()) return;
       console.error("🔹 Error:", error);
       node.onDrawBackground = null;
       node.setDirtyCanvas(true, true);
@@ -74,8 +81,9 @@ function setBackgroundImageContain(node, canvasUrl, maskUrl) {
 
 async function previewonthenode(node) {
   const timestamp = new Date().getTime();
-  const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
-  const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
+  if (usesTeamBridge() && !teamMode) { setBackgroundImageContain(node, null, null); return; }
+  const canvasImageUrl = teamMode ? teamPreview.canvas : `/ps/inputs/PS_canvas.png?v=${timestamp}`;
+  const maskImageUrl = teamMode ? teamPreview.mask : `/ps/inputs/PS_mask.png?v=${timestamp}`;
   setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
 }
 
@@ -127,12 +135,7 @@ async function addBooleanProperty(node) {
 
   node.properties = createWatchedObject(properties, async (property, newValue) => {
     if (property === "Disable Preview") {
-      const timestamp = new Date().getTime();
-      const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
-      const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
-      setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
-      if (!teamMode) console.log("canvasImageUrl: ", canvasImageUrl);
-      if (!teamMode) console.log("maskImageUrl: ", maskImageUrl);
+      await previewonthenode(node);
     }
   });
 }

@@ -4,6 +4,7 @@ globalThis.createPSTeamBridge = function (hooks) {
   const randomID = () => Array.from({length: 32}, () => Math.floor(Math.random() * 16).toString(16)).join('');
   const panel = randomID();
   let jobs = new Map(), journal = {version: 2, revision: 0, connections: {}};
+  let transport = 'company', connectionKey = null, account = null;
   let ready = false, session = null, origin = null, busy = false, active = null;
   let view = null, epoch = 0, insertion = null, previousPlacement = null, loadError = null, preparingInsert = false;
   let presentationChain = Promise.resolve(), saveChain = Promise.resolve();
@@ -35,9 +36,9 @@ globalThis.createPSTeamBridge = function (hooks) {
     const next = saveChain.then(async () => {
       if (loadError) throw loadError;
       if (origin && session) {
-        const connection = journal.connections[origin] ||= {session, sessions: {}};
+        const connection = journal.connections[connectionKey] ||= {session, sessions: {}};
         connection.session = session;
-        connection.sessions[session] = {jobs: [...jobs].map(([rid, context]) => [rid, stateFor(context)])};
+        connection.sessions[session] = {account, jobs: [...jobs].map(([rid, context]) => [rid, stateFor(context)])};
       }
       journal.revision += 1;
       if (hooks.save) await hooks.save(JSON.parse(JSON.stringify(journal)));
@@ -50,11 +51,11 @@ globalThis.createPSTeamBridge = function (hooks) {
       sourceDocumentID: context.sourceDocumentID ?? context.documentID, needsDocumentReview: true,
       results: new Map(), inserted: new Set(context.inserted || []), uncertain: new Set(context.uncertain || []), acknowledged: new Set()}]));
   }
-  function same(owner) { return owner.epoch === epoch && owner.origin === origin && owner.session === session; }
-  function owner() { return {epoch, origin, session}; }
+  function same(owner) { return owner.epoch === epoch && owner.origin === origin && owner.session === session && owner.transport === transport; }
+  function owner() { return {epoch, origin, session, transport, connectionKey}; }
   function send(type, values = {}, target = owner()) {
     if (!same(target) || !view || !origin) throw new Error('Web panel changed; reconnect to resume the saved request');
-    view.postMessage({...values, protocol, panel, session_id: session, type}, origin);
+    view.postMessage({...values, protocol, panel, session_id: session, transport, type}, origin);
   }
   async function selectNext() {
     if (active || !ready) return;
@@ -76,47 +77,55 @@ globalThis.createPSTeamBridge = function (hooks) {
       if (view === current) { ready = false; epoch++; active = null; }
     });
   }
+  function helloState() {
+    const sessions = journal.connections[connectionKey]?.sessions || {};
+    return {session_ids: Object.keys(sessions), session_owners: Object.fromEntries(Object.entries(sessions)
+      .filter(([, saved]) => saved.jobs?.length && saved.account).map(([sid, saved]) => [sid, saved.account]))};
+  }
   async function connect(url) {
     ready = false; active = null; epoch++;
     const expected = epoch;
-    const next = new URL(url.replace(/^ws/, 'http')).origin;
+    const parsed = new URL(url.replace(/^ws/, 'http'));
+    const next = parsed.origin;
+    const nextTransport = parsed.searchParams.get('ps_transport') === 'standalone' ? 'standalone' : 'company';
+    const nextKey = nextTransport === 'standalone' ? next + '#ps_transport=standalone' : next;
     await loaded;
     if (expected !== epoch) return;
     if (loadError) { hooks.status(loadError.message, 'darkred'); return; }
     await serial(async () => {
       if (expected !== epoch) return;
-      if (origin !== next) {
+      if (connectionKey !== nextKey) {
         if (origin) await persist();
-        origin = next;
-        const saved = journal.connections[origin];
-        session = saved?.session || null; jobs = restore(saved?.sessions?.[session]); active = null;
+        origin = next; transport = nextTransport; connectionKey = nextKey;
+        const saved = journal.connections[connectionKey];
+        session = saved?.session || null; account = saved?.sessions?.[session]?.account || null; jobs = restore(saved?.sessions?.[session]); active = null;
       }
       attachView(document.querySelector('webview'));
-      if (view) send('hello', {session_ids: Object.keys(journal.connections[origin]?.sessions || {})});
+      if (view) send('hello', helloState());
       hooks.status('Open Web panel and sign in', 'orange');
     });
   }
   setInterval(() => {
     if (!enabled() || loadError) return;
     attachView(document.querySelector('webview'));
-    if (view && origin && !ready) { try { send('hello', {session_ids: Object.keys(journal.connections[origin]?.sessions || {})}); } catch {} }
+    if (view && origin && !ready) { try { send('hello', helloState()); } catch {} }
   }, 3000);
   window.addEventListener('message', async event => {
     const m = event.data;
-    if (!view || event.source !== view || event.origin !== origin || !m || m.protocol !== protocol || m.panel !== panel) return;
+    if (!view || event.source !== view || event.origin !== origin || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
     if (m.type !== 'ready' && m.session_id !== session) return;
     const target = owner();
     try {
       if (m.type === 'ready') {
-        if (typeof m.session_id !== 'string' || !m.session_id) return;
+        if (typeof m.session_id !== 'string' || !m.session_id || (transport === 'standalone' && (typeof m.account_id !== 'string' || !m.account_id))) return;
         await serial(async () => {
           if (!same(target)) return;
           if (session && session !== m.session_id) {
             hooks.status('Login changed: previous requests remain bound to the old session', 'orange');
             await persist();
-            jobs = restore(journal.connections[origin]?.sessions?.[m.session_id]); active = null; epoch++;
+            jobs = restore(journal.connections[connectionKey]?.sessions?.[m.session_id]); active = null; epoch++;
           }
-          session = m.session_id;
+          session = m.session_id; account = m.account_id || null;
           await persist();
           ready = true; hooks.status('Connected', 'green');
           send('resume', {requests: [...jobs.keys()]});
@@ -304,7 +313,7 @@ globalThis.createPSTeamBridge = function (hooks) {
           hooks.status('Insertion interrupted: review the original document for partial layers before retrying', 'orange');
         }
         if (jobs.get(finished.rid) !== finished.context) {
-          const saved = journal.connections[finished.owner.origin]?.sessions?.[finished.owner.session];
+          const saved = journal.connections[finished.owner.connectionKey]?.sessions?.[finished.owner.session];
           if (saved) saved.jobs = saved.jobs.map(([rid, value]) => [rid, rid === finished.rid ? stateFor(finished.context) : value]);
         }
         await persist();
