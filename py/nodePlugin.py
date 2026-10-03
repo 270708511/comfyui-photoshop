@@ -22,17 +22,27 @@ nodepath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def team_snapshot(extra_pnginfo):
+    if extra_pnginfo is not None and not isinstance(extra_pnginfo, dict):
+        raise ValueError("Invalid Photoshop metadata")
     meta = (extra_pnginfo or {}).get("ps_team")
     if meta is None:
+        if os.environ.get("PS_TEAM_REQUIRED", "").lower() in ("1", "true", "yes"):
+            raise ValueError("Photoshop team snapshot metadata is required on this render worker")
         return None
     if not isinstance(meta, dict) or meta.get("version") != "ps-team-1" or not re.fullmatch(r"[a-f0-9]{32}", str(meta.get("snapshot_id", ""))):
         raise ValueError("Invalid Photoshop team snapshot metadata")
     root = os.environ.get("PS_TEAM_INPUT_ROOT")
     if not root:
         raise ValueError("PS_TEAM_INPUT_ROOT is required on this render worker")
-    directory = Path(root).resolve() / meta["snapshot_id"]
-    if not all((directory / name).is_file() for name in ("PS_canvas.png", "PS_mask.png", "config.json")):
-        raise ValueError("Photoshop team snapshot is incomplete")
+    root = Path(root).resolve()
+    directory = root / meta["snapshot_id"]
+    # Never follow an input symlink into another request or outside the configured root.
+    if directory.is_symlink() or directory.resolve().parent != root:
+        raise ValueError("Photoshop team snapshot path is unsafe")
+    for name in ("PS_canvas.png", "PS_mask.png", "config.json"):
+        item = directory / name
+        if item.is_symlink() or item.resolve().parent != directory or not item.is_file():
+            raise ValueError("Photoshop team snapshot is incomplete or unsafe")
     return directory
 
 
@@ -129,7 +139,9 @@ class PhotoshopToComfyUI:
         self.width, self.height = self.i.size
 
         self.loadImg(self.maskImgDir)
-        self.i = ImageOps.exif_transpose(self.i)
+        self.i = ImageOps.exif_transpose(self.i).convert("RGB")
+        if getattr(self, "team_mode", False) and self.i.size != (self.width, self.height):
+            raise ValueError("Photoshop team canvas and mask dimensions differ")
         self.mask = np.array(self.i.getchannel("B")).astype(np.float32) / 255.0
         self.mask = torch.from_numpy(self.mask)
 
@@ -155,9 +167,20 @@ class PhotoshopToComfyUI:
 
     @classmethod
     def IS_CHANGED(cls, extra_pnginfo=None):
-        directory = team_snapshot(extra_pnginfo)
-        if directory:
-            return directory.name
+        try:
+            directory = team_snapshot(extra_pnginfo)
+            if directory:
+                digest = hashlib.sha256()
+                for name in ("PS_canvas.png", "PS_mask.png", "config.json"):
+                    with (directory / name).open("rb") as file:
+                        for block in iter(lambda: file.read(1024 * 1024), b""):
+                            digest.update(block)
+                return directory.name + ":" + digest.hexdigest()
+        except Exception:
+            # ComfyUI can treat an exception in IS_CHANGED as cache-compatible.
+            # Force execution so PS_Execute rejects invalid metadata instead of
+            # accidentally returning a previous user's cached snapshot/output.
+            return float("NaN")
         try:
             configJson = os.path.join(nodepath, "data", "ps_inputs", "config.json")
             canvasDir = os.path.join(nodepath, "data", "ps_inputs", "PS_canvas.png")

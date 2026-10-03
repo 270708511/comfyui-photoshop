@@ -5,9 +5,47 @@ import sys
 import uuid
 import json
 import base64
+import re
 from aiohttp import web, WSMsgType
 import folder_paths
 from server import PromptServer
+
+# Team output files cannot be overwritten or read through the generic upload APIs.
+# ComfyUI installs /api aliases for these routes, so both spellings are covered.
+def _team_reserved_path(value):
+    parts = re.split(r"[\\/]", str(value))
+    return any(part.rstrip(" .").casefold().startswith(("ps_team", "ps_tea~")) for part in parts)
+
+
+@web.middleware
+async def protect_team_uploads(request, handler):
+    path = request.path
+    if path.startswith("/api/"):
+        path = path[4:]
+    if os.environ.get("PS_TEAM_INPUT_ROOT") and path in {"/upload/image", "/upload/mask"} and request.method == "POST":
+        post = await request.post()
+        # Output uploads are unnecessary for team snapshots, and allowing arbitrary
+        # filenames here could overwrite an immutable generated result on Windows.
+        if post.get("type") == "output":
+            raise web.HTTPForbidden(text="Direct output uploads are disabled in team mode")
+        image = post.get("image")
+        if _team_reserved_path(post.get("subfolder", "")) or _team_reserved_path(getattr(image, "filename", "")):
+            raise web.HTTPForbidden(text="Reserved team asset namespace")
+        if path == "/upload/mask":
+            try:
+                original = json.loads(post.get("original_ref", "{}"))
+                if not isinstance(original, dict):
+                    raise ValueError()
+            except (TypeError, ValueError):
+                raise web.HTTPBadRequest(text="Invalid original image reference")
+            if (_team_reserved_path(original.get("subfolder", ""))
+                    or _team_reserved_path(original.get("filename", ""))
+                    or str(original.get("filename", "")).startswith("blake3:")):
+                raise web.HTTPForbidden(text="Reserved team asset namespace")
+    return await handler(request)
+
+
+PromptServer.instance.app.middlewares.append(protect_team_uploads)
 
 # Set up paths
 nodepath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
