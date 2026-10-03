@@ -201,6 +201,58 @@ class Nodes(unittest.TestCase):
             self.assertTrue(torch.all(result[0][..., 2] == 1))
             self.mod.PhotoshopToComfyUI.IS_CHANGED()
 
+    def test_native_team_runtime_reloads_prompts_seed_slider_and_mask(self):
+        root = self.base / 'native-trusted'; directory = root / ('8' * 32)
+        directory.mkdir(parents=True)
+        Image.new('RGB', (4, 1), (20, 30, 40)).save(directory / 'PS_canvas.png')
+        mask = Image.new('RGB', (4, 1))
+        mask.putdata([(1, 1, 1), (0, 0, 255), (255, 255, 0), (0, 0, 128)])
+        mask.save(directory / 'PS_mask.png')
+        config = dict(positive='native \u5f69\u8272', negative='negative prompt', seed=str(2 ** 64 - 1), slider=12.5)
+        (directory / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+        meta = {'ps_team': dict(version='ps-team-1', snapshot_id=directory.name,
+                                config=dict(positive='forged', negative='', seed=1, slider=1))}
+        with patch.dict(os.environ, {'PS_TEAM_REQUIRED': '1', 'PS_TEAM_INPUT_ROOT': str(root)}):
+            node = self.mod.PhotoshopToComfyUI()
+            result = node.PS_Execute(meta)
+            self.assertEqual(result[2:], (0.125, 2 ** 64 - 1, 'native \u5f69\u8272', 'negative prompt', 4, 1))
+            self.assertEqual(tuple(result[1].shape), (1, 1, 4))
+            self.assertTrue(torch.allclose(result[1], torch.tensor([[[0.0, 1.0, 0.0, 128 / 255.0]]])))
+            previous = self.mod.PhotoshopToComfyUI.IS_CHANGED(meta)
+            config.update(positive='changed', negative='', seed=0, slider=100)
+            (directory / 'config.json').write_text(json.dumps(config))
+            Image.new('RGB', (4, 1), (0, 255, 0)).save(directory / 'PS_canvas.png')
+            Image.new('L', (4, 1), 0).save(directory / 'PS_mask.png')
+            self.assertNotEqual(previous, self.mod.PhotoshopToComfyUI.IS_CHANGED(meta))
+            result = node.PS_Execute(meta)
+            self.assertEqual(result[2:], (1.0, 0, 'changed', '', 4, 1))
+            self.assertTrue(torch.all(result[0][..., 1] == 1))
+            self.assertTrue(torch.all(result[1] == 0))
+
+    def test_native_team_batch_output_preserves_every_image(self):
+        root = self.base / 'native-batch'; directory = root / ('9' * 32)
+        directory.mkdir(parents=True)
+        for name in ('PS_canvas.png', 'PS_mask.png'):
+            Image.new('RGB', (4, 3)).save(directory / name)
+        (directory / 'config.json').write_text(json.dumps(dict(positive='', negative='', seed=0, slider=0)))
+        meta = {'ps_team': dict(version='ps-team-1', snapshot_id=directory.name)}
+        batch = torch.stack([torch.zeros((3, 4, 3)), torch.ones((3, 4, 3))])
+        with patch.dict(os.environ, {'PS_TEAM_REQUIRED': '1', 'PS_TEAM_INPUT_ROOT': str(root)}):
+            node = self.mod.ComfyUIToPhotoshop(); node.connect_to_backend = AsyncMock()
+            result = asyncio.run(node.execute(batch, filename_prefix='../../untrusted', extra_pnginfo=meta))
+            self.assertIs(result['result'][0], batch)
+            self.assertEqual(len(result['ui']['images']), 2)
+            names = set()
+            for index, item in enumerate(result['ui']['images']):
+                self.assertEqual(item['type'], 'output')
+                self.assertEqual(item['subfolder'], 'ps_team/' + directory.name)
+                names.add(item['filename'])
+                with Image.open(self.base / 'output' / item['subfolder'] / item['filename']) as image:
+                    self.assertEqual(image.size, (4, 3))
+                    self.assertEqual(image.getpixel((0, 0)), (index * 255,) * 3)
+            self.assertEqual(len(names), 2)
+            node.connect_to_backend.assert_not_awaited()
+
     def test_async_output_keeps_image_ui_and_switches_back_to_legacy(self):
         node = self.mod.ComfyUIToPhotoshop(); node.connect_to_backend = AsyncMock()
         tensor = torch.ones((2, 3, 4, 3))

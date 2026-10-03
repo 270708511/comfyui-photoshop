@@ -9,6 +9,28 @@ globalThis.createPSTeamBridge = function (hooks) {
   let view = null, epoch = 0, insertion = null, previousPlacement = null, loadError = null, preparingInsert = false;
   let connectionAttempt = 0, connectionBlocked = false, viewLoadFailed = false;
   const watchedViews = new WeakSet();
+  let native = null, nativeMode = false, nativeState = null;
+  let appliedTeamMode = null, appliedURL = null;
+  let nativeSelectionVersion = 0;
+  function nativeEnabled(url = appliedURL || hooks.url()) {
+    try { return typeof globalThis.createPSNativeTransport === 'function' && parseURL(url).transport === 'company' && enabled(url); } catch { return false; }
+  }
+  function nativeTransport() {
+    if (!native && typeof globalThis.createPSNativeTransport === 'function') {
+      native = globalThis.createPSNativeTransport({
+        fetch: hooks.fetch || ((...args) => globalThis.fetch(...args)),
+        load: hooks.loadNative, save: hooks.saveNative,
+        emit: message => { if (nativeMode) Promise.resolve(receiveMessage(message, true)).catch(() => {}); },
+        onState: state => {
+          nativeState = state;
+          if (state.selectionVersion !== nativeSelectionVersion) nativeSelectionVersion = state.selectionVersion;
+          if (nativeMode && !state.authenticated) { ready = false; active = null; }
+          try { hooks.nativeState?.(state); } catch {}
+        }
+      });
+    }
+    return native;
+  }
   let presentationChain = Promise.resolve(), saveChain = Promise.resolve();
   // UXP is not a browser: older supported hosts have no WHATWG URL constructor.
   // Use the same strict parser for navigation, transport selection and origin checks.
@@ -133,8 +155,14 @@ globalThis.createPSTeamBridge = function (hooks) {
   function same(owner) { return owner.epoch === epoch && owner.origin === origin && owner.session === session && owner.transport === transport; }
   function owner() { return {epoch, origin, session, transport, connectionKey}; }
   function send(type, values = {}, target = owner()) {
-    if (!same(target) || !view || !origin) throw new Error('Web panel changed; reconnect to resume the saved request');
-    view.postMessage({...values, protocol, panel, session_id: session, transport, type}, origin);
+    if (!same(target) || !origin) throw new Error('Connection changed; reconnect to resume the saved request');
+    const message = {...values, protocol, panel, session_id: session, transport, type};
+    if (nativeMode) {
+      Promise.resolve(nativeTransport().receive(message)).catch(error => { if (same(target)) diagnosticStatus('Native connection: ' + safeMessage(error), 'darkred'); });
+      return;
+    }
+    if (!view) throw new Error('Web panel changed; reconnect to resume the saved request');
+    view.postMessage(message, origin);
   }
   async function selectNext() {
     if (active || !ready) return;
@@ -146,27 +174,50 @@ globalThis.createPSTeamBridge = function (hooks) {
       return;
     }
   }
-  function enabled(url = hooks.url()) {
-    try { return !parseURL(url).loopback; } catch { return true; }
+  function enabled(url) {
+    if (arguments.length === 0 && appliedTeamMode !== null) return appliedTeamMode;
+    try { return !parseURL(url === undefined ? hooks.url() : url).loopback; } catch { return true; }
+  }
+  async function disconnectLocal(url) {
+    if (busy || insertion) throw new Error('Finish the current canvas export or insertion before switching connection');
+    ready = false; active = null; epoch++; connectionBlocked = true;
+    const expected = ++connectionAttempt;
+    await loaded;
+    if (expected !== connectionAttempt) return false;
+    return await serial(async () => {
+      if (expected !== connectionAttempt) return false;
+      if (origin) await persist();
+      if (expected !== connectionAttempt) return false;
+      if (native) await native.disconnect();
+      if (expected !== connectionAttempt) return false;
+      nativeMode = false; nativeState = null; view = null;
+      origin = null; session = null; account = null; connectionKey = null; jobs = new Map();
+      appliedTeamMode = false; appliedURL = url;
+      return true;
+    });
   }
   function attachView(current) {
+    if (nativeMode) return; // Optional editor load events do not own the native data channel.
     if (current === view) return;
     view = current; ready = false; active = null; viewLoadFailed = false; epoch++;
     if (!current || watchedViews.has(current)) return;
     watchedViews.add(current);
     current.addEventListener('loadstart', () => {
-      if (view !== current) return;
+      if (nativeMode || view !== current) return;
       ready = false; epoch++; active = null; viewLoadFailed = false;
       if (enabled()) hooks.status('Loading Web panel', 'orange');
     });
     current.addEventListener('loaderror', event => {
-      if (view !== current || !enabled()) return;
+      if (nativeMode || view !== current || !enabled()) return;
       ready = false; epoch++; active = null; viewLoadFailed = true;
       const code = typeof event.code === 'number' && Number.isFinite(event.code) ? ' (' + event.code + ')' : '';
-      diagnosticStatus('Web panel failed to load' + code + ': ' + safeMessage(event.message || 'Check the server address and connection', event.url), 'darkred');
+      const message = event.code === -1022
+        ? 'Web panel blocked (-1022): macOS ATS requires valid HTTPS'
+        : 'Web panel failed to load' + code + ': ' + safeMessage(event.message || 'Check the server address and connection', event.url);
+      diagnosticStatus(message, 'darkred');
     });
     current.addEventListener('loadstop', event => {
-      if (view !== current || !enabled() || !origin || connectionBlocked || viewLoadFailed) return;
+      if (nativeMode || view !== current || !enabled() || !origin || connectionBlocked || viewLoadFailed) return;
       let loadedOrigin;
       try { loadedOrigin = parseURL(event.url || current.src).origin; } catch {
         ready = false; epoch++; active = null;
@@ -188,12 +239,15 @@ globalThis.createPSTeamBridge = function (hooks) {
       .filter(([, saved]) => saved.jobs?.length && saved.account).map(([sid, saved]) => [sid, saved.account]))};
   }
   async function connect(url) {
+    if (busy || insertion) { hooks.status('Finish canvas export or insertion before switching connection', 'orange'); return false; }
     ready = false; active = null; epoch++; connectionBlocked = true;
     const expected = ++connectionAttempt;
+    viewLoadFailed = false;
     try {
       const parsed = parseURL(url, true);
       const next = parsed.origin;
       const nextTransport = parsed.transport;
+      const useNative = nativeEnabled(url);
       const nextKey = nextTransport === 'standalone' ? next + '#ps_transport=standalone' : next;
       await loaded;
       if (expected !== connectionAttempt) return false;
@@ -207,8 +261,20 @@ globalThis.createPSTeamBridge = function (hooks) {
           const saved = journal.connections[connectionKey];
           session = saved?.session || null; account = saved?.sessions?.[session]?.account || null; jobs = restore(saved?.sessions?.[session]); active = null;
         }
-        attachView(document.querySelector('webview'));
+        if (nativeMode && !useNative && native) await native.disconnect();
+        if (expected !== connectionAttempt) return false;
+        if (nativeMode && !useNative) nativeState = null;
+        nativeMode = useNative; if (nativeMode) viewLoadFailed = false;
+        appliedTeamMode = true; appliedURL = parsed.url;
         connectionBlocked = false;
+        if (nativeMode) {
+          hooks.status('Connecting native data channel', 'orange');
+          await nativeTransport().connect(next);
+          if (expected !== connectionAttempt) return false;
+          send('hello', helloState());
+          return true;
+        }
+        attachView(document.querySelector('webview'));
         if (!viewLoadFailed) {
           hooks.status('Open Web panel and sign in', 'orange');
           // A WebView can exist before its messaging channel is usable. Keep a
@@ -229,13 +295,16 @@ globalThis.createPSTeamBridge = function (hooks) {
     }
   }
   setInterval(() => {
-    if (!enabled() || loadError) return;
+    if (!enabled() || loadError || nativeMode) return;
     attachView(document.querySelector('webview'));
     if (view && origin && !ready && !connectionBlocked && !viewLoadFailed) { try { send('hello', helloState()); } catch {} }
   }, 3000);
-  window.addEventListener('message', async event => {
-    const m = event.data;
-    if (connectionBlocked || viewLoadFailed || !view || event.source !== view || event.origin !== origin || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
+  window.addEventListener('message', event => {
+    if (nativeMode || !view || event.source !== view || event.origin !== origin) return;
+    return receiveMessage(event.data, false);
+  });
+  async function receiveMessage(m, nativeMessage = false) {
+    if (nativeMessage !== nativeMode || connectionBlocked || (!nativeMode && viewLoadFailed) || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
     if (m.type !== 'ready' && m.session_id !== session) return;
     const target = owner();
     let reportTarget = target;
@@ -319,32 +388,39 @@ globalThis.createPSTeamBridge = function (hooks) {
     } catch (error) {
       if (same(reportTarget) && !connectionBlocked && !viewLoadFailed) hooks.status('Result: ' + error.message, 'darkred');
     }
-  });
+  }
   async function capture(config) {
     if (busy) return;
     busy = true;
     const target = owner();
+    const captureSelection = nativeSelectionVersion;
+    const selectionUnchanged = () => !nativeMode || (captureSelection === nativeSelectionVersion && nativeState?.canGenerate);
     try {
       await loaded;
       if (loadError) throw loadError;
-      if (!ready) throw new Error('Web panel is not ready; open it and sign in');
+      if (!ready) throw new Error(nativeMode ? 'Sign in through the native panel first' : 'Web panel is not ready; open it and sign in');
+      if (!selectionUnchanged()) throw new Error('Choose a prepared workflow in the native panel first');
       const doc = hooks.document();
       if (!doc) throw new Error('No open Photoshop document');
       const rid = randomID(), documentID = doc.id;
       const canvasBase64 = await hooks.canvas();
       const bounds = hooks.bounds();
       const capturedBounds = bounds ? {...bounds} : null;
-      if (hooks.document()?.id !== documentID || !same(target)) throw new Error('Document or Web panel changed during export');
+      if (hooks.document()?.id !== documentID || !same(target) || !selectionUnchanged()) throw new Error('Document or connection changed during export');
       const maskBase64 = await hooks.mask();
       const configdata = await config();
-      if (hooks.document()?.id !== documentID || !same(target) || !ready || !canvasBase64 || !maskBase64
+      if (hooks.document()?.id !== documentID || !same(target) || !selectionUnchanged() || !ready || !canvasBase64 || !maskBase64
           || JSON.stringify(hooks.bounds()) !== JSON.stringify(capturedBounds)) throw new Error('Canvas/mask export failed, or document/selection changed');
       const context = {documentID, documentName: doc.title || doc.name || String(documentID), sourceDocumentID: documentID, needsDocumentReview: false, maskBase64, bounds: capturedBounds, resultCount: null, results: new Map(), inserted: new Set(), uncertain: new Set(), acknowledged: new Set()};
       await serial(async () => {
-        if (!same(target) || !ready) throw new Error('Web panel changed during export');
+        if (!same(target) || !ready || !selectionUnchanged()) throw new Error('Connection or workflow changed during export');
         jobs.set(rid, context);
         try { await persist(); } catch (error) { jobs.delete(rid); throw error; }
-        send('generate', {request_id: rid, payload: {canvasBase64, maskBase64, configdata, document_id: String(documentID), bounds: capturedBounds}}, target);
+        if (!same(target) || !ready || !selectionUnchanged()) {
+          jobs.delete(rid); await persist();
+          throw new Error('Connection or workflow changed while saving the request');
+        }
+        send('generate', {request_id: rid, selection_version: captureSelection, payload: {canvasBase64, maskBase64, configdata, document_id: String(documentID), bounds: capturedBounds}}, target);
       });
       hooks.status('Uploading', 'yellow');
     } catch (error) { hooks.status('Upload: ' + error.message, 'darkred'); }
@@ -372,7 +448,7 @@ globalThis.createPSTeamBridge = function (hooks) {
         if (busy) throw new Error('Canvas export/insertion is busy');
         busy = true;
         try {
-          if (!ready) throw new Error('Reconnect the Web panel before inserting a team result');
+          if (!ready) throw new Error('Reconnect the data channel before inserting a team result');
           await selectNext();
           // Make uncertain results reachable from the existing Insert action.
           if (!active) {
@@ -380,7 +456,7 @@ globalThis.createPSTeamBridge = function (hooks) {
               const index = [...context.results.keys()].find(i => context.uncertain.has(i) && !context.quarantined);
               if (index === undefined) continue;
               const target = owner(); await hooks.preview(context.results.get(index));
-              if (!same(target)) throw new Error('Web panel changed');
+              if (!same(target)) throw new Error('Connection changed');
               active = {rid, index, context, owner: target}; break;
             }
           }
@@ -393,7 +469,7 @@ globalThis.createPSTeamBridge = function (hooks) {
               `This result came from "${chosen.context.documentName || chosen.context.sourceDocumentID}" before the panel reloaded. Is the currently selected document "${doc.title || doc.name || doc.id}" the original? Cancel to inspect or switch documents, then click Insert again.`,
               [['cancel', 'Cancel'], ['rebind', 'Use this original document']]);
             if (answer !== 'rebind') throw new Error('Recovery cancelled; select and explicitly rebind the original document to continue');
-            if (!same(chosen.owner) || hooks.document()?.id !== doc.id) throw new Error('Document or Web panel changed during confirmation');
+            if (!same(chosen.owner) || hooks.document()?.id !== doc.id) throw new Error('Document or connection changed during confirmation');
             chosen.context.documentID = doc.id; chosen.context.needsDocumentReview = false; await persist();
           }
           if (chosen.context.uncertain.has(chosen.index)) {
@@ -401,7 +477,7 @@ globalThis.createPSTeamBridge = function (hooks) {
             const answer = await ask('Review interrupted insertion',
               'An earlier insertion may already have created a layer. Cancel to inspect the original document. Mark inserted only if this preview is already present. Retry only after removing any partial layer from that attempt.',
               [['cancel', 'Cancel'], ['inserted', 'Already inserted'], ['retry', 'Retry after review']]);
-            if (!same(chosen.owner) || hooks.document()?.id !== chosen.context.documentID) throw new Error('Document or Web panel changed during confirmation');
+            if (!same(chosen.owner) || hooks.document()?.id !== chosen.context.documentID) throw new Error('Document or connection changed during confirmation');
             if (!['inserted', 'retry'].includes(answer)) throw new Error('Interrupted insertion needs manual layer review; request retained');
             chosen.context.uncertain.delete(chosen.index);
             if (answer === 'inserted') {
@@ -414,7 +490,7 @@ globalThis.createPSTeamBridge = function (hooks) {
           if (chosen.context.inserted.has(chosen.index)) throw new Error('This result has already been inserted');
           insertion = chosen;
           await hooks.activate(insertion.context.documentID);
-          if (!same(insertion.owner) || hooks.document()?.id !== insertion.context.documentID) throw new Error('Original document or Web panel changed');
+          if (!same(insertion.owner) || hooks.document()?.id !== insertion.context.documentID) throw new Error('Original document or connection changed');
           previousPlacement = hooks.setBounds(insertion.context.bounds);
           // fg/dg use Photoshop's real selection. Compare its complete exported mask,
           // including arbitrary shape, rather than trusting the captured bounds alone.
@@ -486,12 +562,13 @@ globalThis.createPSTeamBridge = function (hooks) {
     });
   }
   function control(payload) {
-    if (!ready) { hooks.status('Web panel is not ready', 'orange'); return; }
+    if (nativeMode) { hooks.status('Use native workflow and parameter controls; editor mode changes require a new prepared workflow', 'orange'); return; }
+    if (!ready) { hooks.status('Data channel is not ready', 'orange'); return; }
     send('control', {payload});
   }
   function cancel(rid) {
     if (busy || !ready || !jobs.has(rid)) throw new Error('Request cannot be cancelled now');
     send('cancel', {request_id: rid});
   }
-  return {enabled, normalizeURL: url => parseURL(url, true).url, watchView: attachView, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
+  return {enabled, canSwitch:()=>!busy&&!insertion&&!preparingInsert, nativeEnabled, getNativeTransport: nativeTransport, disconnectLocal, normalizeURL: url => parseURL(url, true).url, watchView: attachView, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
 };

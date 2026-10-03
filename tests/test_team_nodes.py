@@ -148,6 +148,66 @@ class TeamNodesTest(unittest.TestCase):
         (self.directory / 'config.json').write_text(json.dumps(config))
         self.assertNotEqual(before, Node.IS_CHANGED(self.meta))
 
+    def test_native_runtime_reads_each_trusted_config_field(self):
+        # Exercise the real runtime config/return contract independently of Torch.
+        # Pixel conversion is covered separately by the real Torch/PIL suite.
+        canvas, expanded_mask = object(), object()
+        mask = types.SimpleNamespace(unsqueeze=lambda axis: expanded_mask)
+
+        def provide_images(node):
+            node.canvas, node.mask = canvas, mask
+            node.width, node.height = 640, 480
+
+        node = Node()
+        forged = copy.deepcopy(self.meta)
+        forged['ps_team']['config'] = dict(positive='untrusted', negative='untrusted', seed=1, slider=1)
+        for config in (
+            dict(positive='native prompt \u5f69\u8272', negative='negative text', seed=str(2 ** 64 - 1), slider=100),
+            dict(positive='', negative='', seed=0, slider=0),
+            dict(positive='changed', negative='new negative', seed=9007199254740993, slider=12.5),
+        ):
+            with self.subTest(config=config), patch.object(Node, 'SendImg', provide_images):
+                (self.directory / 'config.json').write_text(json.dumps(config), encoding='utf-8')
+                result = node.PS_Execute(forged)
+                self.assertIs(result[0], canvas)
+                self.assertIs(result[1], expanded_mask)
+                self.assertEqual(result[2:], (config['slider'] / 100, int(config['seed']),
+                    config['positive'], config['negative'], 640, 480))
+                self.assertEqual(node.canvasDir, str(self.directory / 'PS_canvas.png'))
+                self.assertEqual(node.maskImgDir, str(self.directory / 'PS_mask.png'))
+
+    def test_mask_and_every_config_field_invalidate_input_and_output_cache(self):
+        def keys():
+            return (Node.IS_CHANGED(self.meta), Output.IS_CHANGED(extra_pnginfo=self.meta))
+
+        before = keys()
+        (self.directory / 'PS_mask.png').write_bytes(b'native mask changed')
+        self.assertTrue(all(a != b for a, b in zip(before, keys())))
+        config = dict(self.config)
+        for field, value in [('positive', 'updated'), ('negative', 'updated negative'),
+                             ('seed', str(2 ** 64 - 1)), ('slider', 87.5)]:
+            with self.subTest(field=field):
+                before = keys()
+                config[field] = value
+                (self.directory / 'config.json').write_text(json.dumps(config))
+                self.assertTrue(all(a != b for a, b in zip(before, keys())))
+
+    def test_team_output_preserves_entire_batch_and_workflow_metadata(self):
+        node = Output(); node.connect_to_backend = AsyncMock()
+        images = [object(), object(), object()]
+        prompt = {'1': {'class_type': '\U0001f539SendTo Photoshop Plugin', 'inputs': {}}}
+        metadata = dict(self.meta, workflow={'id': 'prepared-workflow', 'nodes': []})
+        ui = {'images': [dict(filename=f'PS_OUTPUTS_{index}.png', type='output',
+                              subfolder='ps_team/' + self.sid) for index in range(3)]}
+        with patch.object(node, 'save_images', return_value={'ui': ui}) as save:
+            result = asyncio.run(node.execute(images, filename_prefix='../../client-selected',
+                                               prompt=prompt, extra_pnginfo=metadata))
+            save.assert_called_once_with(images, 'ps_team/' + self.sid + '/PS_OUTPUTS', prompt, metadata)
+        self.assertIs(result['ui'], ui)
+        self.assertIs(result['result'][0], images)
+        self.assertEqual(len(result['ui']['images']), 3)
+        node.connect_to_backend.assert_not_awaited()
+
     def test_directory_and_file_symlinks_are_rejected(self):
         alias = self.root / ('c' * 32)
         alias.symlink_to(self.directory, target_is_directory=True)

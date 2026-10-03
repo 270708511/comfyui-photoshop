@@ -318,3 +318,13 @@ test('diagnostics mirror safe statuses and redact standalone credentials and URL
   assert.match(f.diagnostics.at(-1), /^Connection:/);
   assert.ok(!f.diagnostics.at(-1).includes('private'));
 });
+
+
+test('ATS -1022 explains secure endpoint requirement without changing the configured address', async () => {
+  const f = fixture();
+  await f.bridge.connect(f.view.src);
+  f.view.emit('loaderror', {code: -1022, message: 'NSURLErrorDomain'});
+  assert.match(f.diagnostics.at(-1), /\(-1022\).*macOS ATS requires valid HTTPS/);
+  assert.equal(f.view.src, 'http://comfyui.example.test');
+  assert.equal(f.messages.at(-1).origin, 'http://comfyui.example.test');
+});
