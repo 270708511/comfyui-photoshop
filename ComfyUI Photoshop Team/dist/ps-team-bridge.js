@@ -70,7 +70,11 @@ globalThis.createPSTeamBridge = function (hooks) {
         }
         session = m.session_id; ready = true; hooks.status('Connected', 'green');
         send('resume', {session_id: session, requests: [...jobs.keys()]});
-      } else if (m.type === 'unbound') { ready = false; hooks.status('Sign in again', 'orange'); }
+      } else if (m.type === 'unbound') {
+        ready = false; session = null;
+        await serial(() => { jobs.clear(); active = null; received.clear(); inserted.clear(); });
+        hooks.status('Sign in again', 'orange');
+      }
       else if (m.type === 'control') {
         if (m.payload && Object.keys(m.payload).every(k => ['Send_workflow', 'Send_rndrMode', 'alert'].includes(k))) hooks.control(m.payload);
       } else if (m.type === 'state' && jobs.has(m.request_id)) {

@@ -22,18 +22,50 @@ nodepath = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def team_snapshot(extra_pnginfo):
-    meta = (extra_pnginfo or {}).get("ps_team")
+    meta = (extra_pnginfo or {}).get("ps_plugin")
     if meta is None:
+        if (extra_pnginfo or {}).get("ps_team") is not None:
+            raise ValueError("Obsolete Photoshop snapshot protocol; reload the plugin")
         return None
-    if not isinstance(meta, dict) or meta.get("version") != "ps-team-1" or not re.fullmatch(r"[a-f0-9]{32}", str(meta.get("snapshot_id", ""))):
-        raise ValueError("Invalid Photoshop team snapshot metadata")
-    root = os.environ.get("PS_TEAM_INPUT_ROOT")
-    if not root:
-        raise ValueError("PS_TEAM_INPUT_ROOT is required on this render worker")
-    directory = Path(root).resolve() / meta["snapshot_id"]
-    if not all((directory / name).is_file() for name in ("PS_canvas.png", "PS_mask.png", "config.json")):
-        raise ValueError("Photoshop team snapshot is incomplete")
-    return directory
+    if not isinstance(meta, dict) or meta.get("version") != "ps-plugin-1":
+        raise ValueError("Invalid Photoshop snapshot metadata")
+    snapshot_id = meta.get("snapshot_id")
+    if not isinstance(snapshot_id, str) or not re.fullmatch(r"[a-f0-9]{32}", snapshot_id):
+        raise ValueError("Invalid Photoshop snapshot ID")
+    request_id = meta.get("request_id")
+    if not isinstance(request_id, str) or not re.fullmatch(r"[a-f0-9]{32}", request_id):
+        raise ValueError("Invalid Photoshop request ID")
+    root = Path(folder_paths.get_input_directory()).resolve()
+    subfolder = "ps_plugin/" + snapshot_id
+    directory = root / "ps_plugin" / snapshot_id
+    if directory.resolve() != directory:
+        raise ValueError("Snapshot directory may not be a symlink")
+    def uploaded_file(key):
+        item = meta.get(key)
+        if not isinstance(item, dict) or item.get("type") != "input" or item.get("subfolder") != subfolder:
+            raise ValueError("Snapshot images must share their own input directory")
+        name = item.get("name")
+        if (not isinstance(name, str) or not name or name in (".", "..")
+                or re.search(r"[\\/:\x00-\x1f]", name) or name.endswith((".", " "))):
+            raise ValueError("Invalid snapshot image filename")
+        path = directory / name
+        if path.resolve() != path or not path.is_file():
+            raise ValueError("Snapshot image is missing or escapes its directory")
+        return path
+    canvas, mask = uploaded_file("canvas"), uploaded_file("mask")
+    if canvas == mask:
+        raise ValueError("Canvas and mask must be separate files")
+    config = meta.get("config")
+    if not isinstance(config, dict) or any(not isinstance(config.get(k), str) for k in ("positive", "negative")):
+        raise ValueError("Invalid snapshot prompts")
+    seed = config.get("seed")
+    if isinstance(seed, bool) or not re.fullmatch(r"[0-9]{1,20}", str(seed)) or int(seed) >= 2 ** 64:
+        raise ValueError("Invalid snapshot seed")
+    slider = config.get("slider")
+    if isinstance(slider, bool) or not isinstance(slider, (float, int)) or not 0 <= slider <= 100:
+        raise ValueError("Invalid snapshot slider")
+    return {"id": snapshot_id, "canvas": canvas, "mask": mask, "config": dict(config),
+            "cache": hashlib.sha256(json.dumps(meta, sort_keys=True).encode()).hexdigest()}
 
 
 def is_changed_file(filepath):
@@ -63,12 +95,12 @@ class PhotoshopToComfyUI:
     CATEGORY = "Photoshop"
 
     def PS_Execute(self, extra_pnginfo=None):
-        directory = team_snapshot(extra_pnginfo)
-        self.team_mode = directory is not None
-        if directory:
-            self.canvasDir = str(directory / "PS_canvas.png")
-            self.maskImgDir = str(directory / "PS_mask.png")
-            self.configJson = str(directory / "config.json")
+        snapshot = team_snapshot(extra_pnginfo)
+        self.team_mode = snapshot is not None
+        if snapshot:
+            self.canvasDir = str(snapshot["canvas"])
+            self.maskImgDir = str(snapshot["mask"])
+            self.snapshot_config = snapshot["config"]
         else:
             self.LoadDir()
         self.loadConfig()
@@ -104,17 +136,20 @@ class PhotoshopToComfyUI:
                 )
 
     def loadConfig(self, retry_count=0):
-        try:
-            with open(self.configJson, "r", encoding="utf-8") as file:
-                self.ConfigData = json.load(file)
-        except:
-            time.sleep(0.5)
-            if retry_count < 4:
-                self.loadConfig(retry_count + 1)
-            else:
-                raise Exception(
-                    "Failed to load config after 5 attempts. \n 🔴 Make sure you have installed and started the Photoshop Plugin Successfully. \n 🔴 otherwise you can restart your Photoshop and your plugin to fix this problem."
-                )
+        if getattr(self, "team_mode", False):
+            self.ConfigData = self.snapshot_config
+        else:
+            try:
+                with open(self.configJson, "r", encoding="utf-8") as file:
+                    self.ConfigData = json.load(file)
+            except:
+                time.sleep(0.5)
+                if retry_count < 4:
+                    self.loadConfig(retry_count + 1)
+                else:
+                    raise Exception(
+                        "Failed to load config after 5 attempts. \n 🔴 Make sure you have installed and started the Photoshop Plugin Successfully. \n 🔴 otherwise you can restart your Photoshop and your plugin to fix this problem."
+                    )
 
         self.psPrompt = self.ConfigData["positive"]
         self.ngPrompt = self.ConfigData["negative"]
@@ -129,6 +164,8 @@ class PhotoshopToComfyUI:
         self.width, self.height = self.i.size
 
         self.loadImg(self.maskImgDir)
+        if self.team_mode and self.i.size != (self.width, self.height):
+            raise ValueError("Canvas and mask dimensions differ")
         self.i = ImageOps.exif_transpose(self.i)
         self.mask = np.array(self.i.getchannel("B")).astype(np.float32) / 255.0
         self.mask = torch.from_numpy(self.mask)
@@ -155,9 +192,9 @@ class PhotoshopToComfyUI:
 
     @classmethod
     def IS_CHANGED(cls, extra_pnginfo=None):
-        directory = team_snapshot(extra_pnginfo)
-        if directory:
-            return directory.name
+        snapshot = team_snapshot(extra_pnginfo)
+        if snapshot:
+            return snapshot["cache"]
         try:
             configJson = os.path.join(nodepath, "data", "ps_inputs", "config.json")
             canvasDir = os.path.join(nodepath, "data", "ps_inputs", "PS_canvas.png")
@@ -210,16 +247,16 @@ class ComfyUIToPhotoshop(SaveImage):
         prompt=None,
         extra_pnginfo=None,
     ):
-        directory = team_snapshot(extra_pnginfo)
-        if directory:
+        snapshot = team_snapshot(extra_pnginfo)
+        if snapshot:
             self.output_dir = folder_paths.get_output_directory()
             self.type = "output"
-            filename_prefix = "ps_team/" + directory.name + "/PS_OUTPUTS"
+            filename_prefix = "ps_plugin/" + snapshot["id"] + "/PS_OUTPUTS"
         else:
             self.output_dir = folder_paths.get_temp_directory()
             self.type = "temp"
         x = self.save_images(output, filename_prefix, prompt, extra_pnginfo)
-        if not directory:
+        if not snapshot:
             await self.connect_to_backend(x["ui"]["images"][0]["filename"])
         return {"ui": x["ui"], "result": (output,)}
 

@@ -1,4 +1,4 @@
-import { teamMode, teamPreview } from "./team.js";
+import { usesTeamBridge, teamMode, teamPreview } from "./team.js";
 import { connect, sendMsg } from "./connection.js";
 import { loadWorkflow, nodever } from "./manager.js";
 import { app as app } from "../../../scripts/app.js";
@@ -8,8 +8,7 @@ export let photoshopNode = [];
 let setupdone = false;
 let connectdone = false;
 let disabledrow = false;
-const canvasImage = teamMode ? { get url() { return teamPreview.canvas; } } : await api.fetchApi(`/ps/inputs/PS_canvas.png`);
-const maskImage = teamMode ? { get url() { return teamPreview.mask; } } : await api.fetchApi(`/ps/inputs/PS_mask.png`);
+
 
 function setBackgroundImageContain(node, canvasUrl, maskUrl) {
   if (node.mode === 2 || !canvasUrl || !maskUrl) {
@@ -74,8 +73,9 @@ function setBackgroundImageContain(node, canvasUrl, maskUrl) {
 
 async function previewonthenode(node) {
   const timestamp = new Date().getTime();
-  const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
-  const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
+  if (usesTeamBridge() && !teamMode) return;
+  const canvasImageUrl = teamMode ? teamPreview.canvas : `/ps/inputs/PS_canvas.png?v=${timestamp}`;
+  const maskImageUrl = teamMode ? teamPreview.mask : `/ps/inputs/PS_mask.png?v=${timestamp}`;
   setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
 }
 
@@ -127,12 +127,7 @@ async function addBooleanProperty(node) {
 
   node.properties = createWatchedObject(properties, async (property, newValue) => {
     if (property === "Disable Preview") {
-      const timestamp = new Date().getTime();
-      const canvasImageUrl = teamMode ? canvasImage.url : `${canvasImage.url}?v=${timestamp}`;
-      const maskImageUrl = teamMode ? maskImage.url : `${maskImage.url}?v=${timestamp}`;
-      setBackgroundImageContain(node, canvasImageUrl, maskImageUrl);
-      if (!teamMode) console.log("canvasImageUrl: ", canvasImageUrl);
-      if (!teamMode) console.log("maskImageUrl: ", maskImageUrl);
+      await previewonthenode(node);
     }
   });
 }
