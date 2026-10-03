@@ -7,7 +7,86 @@ globalThis.createPSTeamBridge = function (hooks) {
   let transport = 'company', connectionKey = null, account = null;
   let ready = false, session = null, origin = null, busy = false, active = null;
   let view = null, epoch = 0, insertion = null, previousPlacement = null, loadError = null, preparingInsert = false;
+  let connectionAttempt = 0, connectionBlocked = false, viewLoadFailed = false;
+  const watchedViews = new WeakSet();
   let presentationChain = Promise.resolve(), saveChain = Promise.resolve();
+  // UXP is not a browser: older supported hosts have no WHATWG URL constructor.
+  // Use the same strict parser for navigation, transport selection and origin checks.
+  function parseURL(value, loopbackDefaults = false) {
+    const invalid = () => { throw new Error('Enter a valid HTTP or HTTPS server address without credentials'); };
+    if (typeof value !== 'string' || !value || /[\s\u0000-\u001f\u007f-\u009f\\]/.test(value) || /%(?![a-f\d]{2})/i.test(value)) invalid();
+    if (value === '127.0.0.1:8187') value = 'https://' + value;
+    if (!/^[a-z][a-z\d+.-]*:\/\//i.test(value)) value = 'http://' + value;
+    const match = /^(https?|wss?):\/\/([^/?#]+)([^?#]*)(\?[^#]*)?(#.*)?$/i.exec(value);
+    if (!match) invalid();
+    const scheme = match[1].toLowerCase().replace(/^ws/, 'http');
+    const authority = match[2];
+    let hostname, port = '';
+    if (authority[0] === '[') {
+      const ipv6 = /^\[([a-f\d:]+)\](?::(\d+))?$/i.exec(authority);
+      if (!ipv6) invalid();
+      const parts = ipv6[1].toLowerCase().split('::');
+      if (parts.length > 2) invalid();
+      const left = parts[0] ? parts[0].split(':') : [], right = parts[1] ? parts[1].split(':') : [];
+      if (![...left, ...right].every(part => /^[a-f\d]{1,4}$/.test(part))) invalid();
+      const missing = 8 - left.length - right.length;
+      if ((parts.length === 1 && missing !== 0) || (parts.length === 2 && missing < 1)) invalid();
+      const words = [...left, ...Array(parts.length === 2 ? missing : 0).fill('0'), ...right].map(part => parseInt(part, 16).toString(16));
+      let bestStart = -1, bestLength = 1;
+      for (let start = 0; start < words.length;) {
+        if (words[start] !== '0') { start++; continue; }
+        let end = start; while (end < words.length && words[end] === '0') end++;
+        if (end - start > bestLength) { bestStart = start; bestLength = end - start; }
+        start = end;
+      }
+      hostname = '[' + (bestStart < 0 ? words.join(':') : words.slice(0, bestStart).join(':') + '::' + words.slice(bestStart + bestLength).join(':')) + ']';
+      port = ipv6[2] || '';
+    } else {
+      const host = /^([a-z\d.-]+)(?::(\d+))?$/i.exec(authority);
+      if (!host) invalid();
+      hostname = host[1].toLowerCase(); port = host[2] || '';
+      if (hostname.length > 253 || !hostname.split('.').every(label => /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/.test(label))) invalid();
+      // Reject browser-specific octal/hex/short IPv4 spellings rather than trust
+      // an origin that the WebView may interpret as another host.
+      if (/^(?:\d+|0x[a-f\d]+)$/i.test(hostname.split('.').pop())) {
+        const octets = hostname.split('.');
+        if (octets.length !== 4 || !octets.every(part => /^(?:0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255)) invalid();
+      }
+    }
+    if (port && (port.length > 5 || Number(port) > 65535)) invalid();
+    const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(hostname);
+    if (!port && loopback && loopbackDefaults) port = scheme === 'https' ? '8187' : '8188';
+    if (port) port = String(Number(port));
+    const navigationPort = port;
+    if (port === (scheme === 'https' ? '443' : '80')) port = '';
+    const origin = scheme + '://' + hostname + (port ? ':' + port : '');
+    let selected = null;
+    for (const item of (match[4] || '').slice(1).split('&')) {
+      const split = item.indexOf('='), key = split < 0 ? item : item.slice(0, split), raw = split < 0 ? '' : item.slice(split + 1);
+      let name; try { name = decodeURIComponent(key.replace(/\+/g, ' ')); } catch { invalid(); }
+      if (name !== 'ps_transport') continue;
+      if (selected !== null) invalid();
+      try { selected = decodeURIComponent(raw.replace(/\+/g, ' ')); } catch { invalid(); }
+    }
+    return {origin, hostname, loopback, transport: selected === 'standalone' ? 'standalone' : 'company',
+      url: (loopback && navigationPort && !port ? scheme + '://' + hostname + ':' + navigationPort : origin) + (match[3] || '') + (match[4] || '') + (match[5] || '')};
+  }
+  function safeMessage(error, eventURL) {
+    let message = String(error?.message || error || 'Unknown error');
+    if (eventURL) message = message.split(String(eventURL)).join('[page]');
+    return message.replace(/(?:https?|wss?):\/\/[^\s\"'<>]+/gi, '[address]')
+      .replace(/\?[^\s\"'<>]*/g, '[query]')
+      .replace(/\b(?:proxy-authorization|authorization|set-cookie|cookie)[\"']?\s*[:=]\s*[^\r\n]*/gi, '[credentials redacted]')
+      .replace(/\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|api[_-]?key|password|passwd|secret|session(?:[_-]?(?:id|key|token))?)[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)/gi, '[credential redacted]')
+      .replace(/\b(?:Bearer|Basic)\s+[a-z\d._~+/=-]+/gi, '[authorization redacted]')
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 240);
+  }
+  function diagnosticStatus(message, color) {
+    hooks.status(message, color);
+    // Diagnostics must never interrupt connection recovery. The status and log
+    // receive the same pre-sanitized text, never the WebView event or raw URL.
+    try { hooks.diagnostic?.(message); } catch {}
+  }
   const loaded = Promise.resolve().then(() => hooks.load?.()).then(value => {
     if (value != null) {
       if (![1, 2].includes(value.version) || !Number.isSafeInteger(value.revision) || !value.connections || typeof value.connections !== 'object') {
@@ -68,13 +147,39 @@ globalThis.createPSTeamBridge = function (hooks) {
     }
   }
   function enabled(url = hooks.url()) {
-    try { return !['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname); } catch { return true; }
+    try { return !parseURL(url).loopback; } catch { return true; }
   }
   function attachView(current) {
     if (current === view) return;
-    view = current; ready = false; active = null; epoch++;
-    if (current) current.addEventListener('loadstart', () => {
-      if (view === current) { ready = false; epoch++; active = null; }
+    view = current; ready = false; active = null; viewLoadFailed = false; epoch++;
+    if (!current || watchedViews.has(current)) return;
+    watchedViews.add(current);
+    current.addEventListener('loadstart', () => {
+      if (view !== current) return;
+      ready = false; epoch++; active = null; viewLoadFailed = false;
+      if (enabled()) hooks.status('Loading Web panel', 'orange');
+    });
+    current.addEventListener('loaderror', event => {
+      if (view !== current || !enabled()) return;
+      ready = false; epoch++; active = null; viewLoadFailed = true;
+      const code = typeof event.code === 'number' && Number.isFinite(event.code) ? ' (' + event.code + ')' : '';
+      diagnosticStatus('Web panel failed to load' + code + ': ' + safeMessage(event.message || 'Check the server address and connection', event.url), 'darkred');
+    });
+    current.addEventListener('loadstop', event => {
+      if (view !== current || !enabled() || !origin || connectionBlocked || viewLoadFailed) return;
+      let loadedOrigin;
+      try { loadedOrigin = parseURL(event.url || current.src).origin; } catch {
+        ready = false; epoch++; active = null;
+        diagnosticStatus('Web panel loaded an unsupported address', 'darkred'); return;
+      }
+      if (loadedOrigin !== origin) {
+        ready = false; epoch++; active = null;
+        diagnosticStatus('Web panel redirected to another origin (' + loadedOrigin + '). Verify the address, then apply it explicitly', 'orange'); return;
+      }
+      if (!ready) {
+        diagnosticStatus('Web page loaded; waiting for team connection', 'orange');
+        try { send('hello', helloState()); } catch (error) { diagnosticStatus('Connection: ' + safeMessage(error), 'darkred'); }
+      }
     });
   }
   function helloState() {
@@ -83,38 +188,57 @@ globalThis.createPSTeamBridge = function (hooks) {
       .filter(([, saved]) => saved.jobs?.length && saved.account).map(([sid, saved]) => [sid, saved.account]))};
   }
   async function connect(url) {
-    ready = false; active = null; epoch++;
-    const expected = epoch;
-    const parsed = new URL(url.replace(/^ws/, 'http'));
-    const next = parsed.origin;
-    const nextTransport = parsed.searchParams.get('ps_transport') === 'standalone' ? 'standalone' : 'company';
-    const nextKey = nextTransport === 'standalone' ? next + '#ps_transport=standalone' : next;
-    await loaded;
-    if (expected !== epoch) return;
-    if (loadError) { hooks.status(loadError.message, 'darkred'); return; }
-    await serial(async () => {
-      if (expected !== epoch) return;
-      if (connectionKey !== nextKey) {
-        if (origin) await persist();
-        origin = next; transport = nextTransport; connectionKey = nextKey;
-        const saved = journal.connections[connectionKey];
-        session = saved?.session || null; account = saved?.sessions?.[session]?.account || null; jobs = restore(saved?.sessions?.[session]); active = null;
+    ready = false; active = null; epoch++; connectionBlocked = true;
+    const expected = ++connectionAttempt;
+    try {
+      const parsed = parseURL(url, true);
+      const next = parsed.origin;
+      const nextTransport = parsed.transport;
+      const nextKey = nextTransport === 'standalone' ? next + '#ps_transport=standalone' : next;
+      await loaded;
+      if (expected !== connectionAttempt) return false;
+      if (loadError) throw loadError;
+      return await serial(async () => {
+        if (expected !== connectionAttempt) return false;
+        if (connectionKey !== nextKey) {
+          if (origin) await persist();
+          if (expected !== connectionAttempt) return false;
+          origin = next; transport = nextTransport; connectionKey = nextKey;
+          const saved = journal.connections[connectionKey];
+          session = saved?.session || null; account = saved?.sessions?.[session]?.account || null; jobs = restore(saved?.sessions?.[session]); active = null;
+        }
+        attachView(document.querySelector('webview'));
+        connectionBlocked = false;
+        if (!viewLoadFailed) {
+          hooks.status('Open Web panel and sign in', 'orange');
+          // A WebView can exist before its messaging channel is usable. Keep a
+          // valid initialized connection retryable on loadstop/the interval.
+          if (view) {
+            try { send('hello', helloState()); }
+            catch (error) { diagnosticStatus('Connection: ' + safeMessage(error), 'darkred'); }
+          }
+        }
+        return true;
+      });
+    } catch (error) {
+      if (expected === connectionAttempt) {
+        connectionBlocked = true; ready = false;
+        diagnosticStatus('Connection: ' + safeMessage(error), 'darkred');
       }
-      attachView(document.querySelector('webview'));
-      if (view) send('hello', helloState());
-      hooks.status('Open Web panel and sign in', 'orange');
-    });
+      return false;
+    }
   }
   setInterval(() => {
     if (!enabled() || loadError) return;
     attachView(document.querySelector('webview'));
-    if (view && origin && !ready) { try { send('hello', helloState()); } catch {} }
+    if (view && origin && !ready && !connectionBlocked && !viewLoadFailed) { try { send('hello', helloState()); } catch {} }
   }, 3000);
   window.addEventListener('message', async event => {
     const m = event.data;
-    if (!view || event.source !== view || event.origin !== origin || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
+    if (connectionBlocked || viewLoadFailed || !view || event.source !== view || event.origin !== origin || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
     if (m.type !== 'ready' && m.session_id !== session) return;
     const target = owner();
+    let reportTarget = target;
     try {
       if (m.type === 'ready') {
         if (typeof m.session_id !== 'string' || !m.session_id || (transport === 'standalone' && (typeof m.account_id !== 'string' || !m.account_id))) return;
@@ -123,10 +247,14 @@ globalThis.createPSTeamBridge = function (hooks) {
           if (session && session !== m.session_id) {
             hooks.status('Login changed: previous requests remain bound to the old session', 'orange');
             await persist();
+            if (!same(target) || connectionBlocked || viewLoadFailed) return;
             jobs = restore(journal.connections[connectionKey]?.sessions?.[m.session_id]); active = null; epoch++;
           }
           session = m.session_id; account = m.account_id || null;
+          const readyOwner = owner();
+          reportTarget = readyOwner;
           await persist();
+          if (!same(readyOwner) || connectionBlocked || viewLoadFailed) return;
           ready = true; hooks.status('Connected', 'green');
           send('resume', {requests: [...jobs.keys()]});
           for (const [rid, context] of jobs) {
@@ -153,7 +281,9 @@ globalThis.createPSTeamBridge = function (hooks) {
         if (m.state === 'cancelled') await serial(async () => {
           if (!same(target)) return;
           jobs.delete(m.request_id); if (active?.rid === m.request_id) active = null;
-          await persist(); if (!busy) await selectNext();
+          await persist();
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
+          if (!busy) await selectNext();
         });
       } else if (m.type === 'error') { hooks.status((m.stage || 'Session') + ': ' + m.error, 'darkred'); }
       else if (m.type === 'acknowledged' && jobs.has(m.request_id)) {
@@ -164,7 +294,9 @@ globalThis.createPSTeamBridge = function (hooks) {
           context.inserted.add(m.index); context.uncertain.delete(m.index); context.acknowledged.add(m.index); context.results.delete(m.index);
           if (active?.rid === m.request_id && active.index === m.index) active = null;
           if (context.resultCount !== null && context.acknowledged.size === context.resultCount) jobs.delete(m.request_id);
-          await persist(); if (!busy) await selectNext();
+          await persist();
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
+          if (!busy) await selectNext();
         });
       } else if (m.type === 'result' && jobs.has(m.request_id) && typeof m.image === 'string' && Number.isInteger(m.index)) {
         await serial(async () => {
@@ -176,13 +308,17 @@ globalThis.createPSTeamBridge = function (hooks) {
           if (context.inserted.has(m.index)) { send('ack', {request_id: m.request_id, index: m.index}); return; }
           context.results.set(m.index, m.image);
           await persist();
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
           // Bytes remain on the server until confirmed insertion. Receipt alone is not durable delivery.
-          send('received', {request_id: m.request_id, index: m.index});
+          send('received', {request_id: m.request_id, index: m.index}, target);
           if (!busy) await selectNext();
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
           hooks.status(context.uncertain.has(m.index) ? 'Interrupted insertion: review original document layers before retrying' : 'Result ready — use the existing insert action', 'green');
         });
       }
-    } catch (error) { hooks.status('Result: ' + error.message, 'darkred'); }
+    } catch (error) {
+      if (same(reportTarget) && !connectionBlocked && !viewLoadFailed) hooks.status('Result: ' + error.message, 'darkred');
+    }
   });
   async function capture(config) {
     if (busy) return;
@@ -357,5 +493,5 @@ globalThis.createPSTeamBridge = function (hooks) {
     if (busy || !ready || !jobs.has(rid)) throw new Error('Request cannot be cancelled now');
     send('cancel', {request_id: rid});
   }
-  return {enabled, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
+  return {enabled, normalizeURL: url => parseURL(url, true).url, watchView: attachView, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
 };

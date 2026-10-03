@@ -164,3 +164,39 @@ VM realms. HTTP responses and Adobe/browser hosting are simulated; no GPU is
 needed. It covers both delivery modes, lost ACK recovery, uncertainty review,
 forged identities, and fail-closed transport selection. Real-host acceptance
 checks above remain required.
+
+## Web panel connection diagnostics (2026-10-03)
+
+The supported Photoshop minimum is 24.1, which introduced panel WebViews
+(UXP 6.4). The UXP bridge must not assume the browser's `URL` constructor or
+`URLSearchParams` exists. Address parsing is deliberately strict, preserves
+explicit `?ps_transport=standalone`, and never follows a different origin as a
+trusted Photoshop connection automatically.
+
+When the Web panel is blank:
+
+1. Check the full Photoshop version and operating system. Unload/load the
+   plugin after a manifest update; a JavaScript-only reload is insufficient.
+2. Apply the complete server URL in Settings. The status now distinguishes
+   navigation/loading, a native WebView load error (its code is not an HTTP
+   status), an unexpected redirect origin, and a loaded page awaiting the team
+   bridge. Invalid addresses are rejected before navigation.
+3. In UXP Developer Tool, use the plugin's Debug action and capture the first
+   red exception and `[PS Team WebView]` diagnostic after Apply/Connect.
+   Navigation diagnostics omit full URLs/querystrings and redact common
+   credential fields; still check screenshots before sharing them.
+4. A working ordinary browser does not establish the WebView's authenticated
+   session. Sign in inside the Web panel. Company mode needs both the reviewed
+   server `/ps/team/` adapter/nginx routes and the matching ComfyUI custom-node
+   browser extension. Do not switch to standalone to bypass a company login or
+   missing company adapter.
+
+The parser, lifecycle and error-display regressions run in a simulated UXP
+host with no `URL` global. They do not constitute a real Photoshop, WebView2,
+macOS, Windows or production-server acceptance test. A user's blank panel
+cannot be assigned a final root cause without the host/load diagnostics.
+
+Official references:
+- https://developer.adobe.com/photoshop/uxp/ps_reference/changelog/
+- https://developer.adobe.com/photoshop/uxp/2022/uxp-api/reference-js/global-members/html-elements/html-web-view-element
+- https://developer.adobe.com/uxp/guides/how-to/debugging/

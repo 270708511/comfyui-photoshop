@@ -6,7 +6,7 @@
 	"manifestVersion": 6,
 	"host": {
 		"app": "PS",
-		"minVersion": "23.0.0"
+		"minVersion": "24.1.0"
 	},
 	"entrypoints": [
 		{
