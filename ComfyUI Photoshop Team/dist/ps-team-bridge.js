@@ -217,18 +217,18 @@ globalThis.createPSTeamBridge = function (hooks) {
     });
   }
   function attachView(current) {
-    if (nativeMode) return; // Optional editor load events do not own the native data channel.
+    if (nativeMode || hooks.optionalEditor?.()) return; // Optional editor load events do not own the native data channel.
     if (current === view) return;
     view = current; ready = false; active = null; viewLoadFailed = false; epoch++;
     if (!current || watchedViews.has(current)) return;
     watchedViews.add(current);
     current.addEventListener('loadstart', () => {
-      if (nativeMode || view !== current) return;
+      if (nativeMode || hooks.optionalEditor?.() || view !== current) return;
       ready = false; epoch++; active = null; viewLoadFailed = false;
       if (enabled()) hooks.status('Loading Web panel', 'orange');
     });
     current.addEventListener('loaderror', event => {
-      if (nativeMode || view !== current || !enabled()) return;
+      if (nativeMode || hooks.optionalEditor?.() || view !== current || !enabled()) return;
       ready = false; epoch++; active = null; viewLoadFailed = true;
       const code = typeof event.code === 'number' && Number.isFinite(event.code) ? ' (' + event.code + ')' : '';
       const message = event.code === -1022
@@ -237,7 +237,7 @@ globalThis.createPSTeamBridge = function (hooks) {
       diagnosticStatus(message, 'darkred');
     });
     current.addEventListener('loadstop', event => {
-      if (nativeMode || view !== current || !enabled() || !origin || connectionBlocked || viewLoadFailed) return;
+      if (nativeMode || hooks.optionalEditor?.() || view !== current || !enabled() || !origin || connectionBlocked || viewLoadFailed) return;
       let loadedOrigin;
       try { loadedOrigin = parseURL(event.url || current.src).origin; } catch {
         ready = false; epoch++; active = null;
@@ -322,7 +322,7 @@ globalThis.createPSTeamBridge = function (hooks) {
     if (view && origin && !ready && !connectionBlocked && !viewLoadFailed) { try { send('hello', helloState()); } catch {} }
   }, 3000);
   window.addEventListener('message', event => {
-    if (nativeMode || !view || event.source !== view || event.origin !== origin) return;
+    if (nativeMode || hooks.optionalEditor?.() || !view || event.source !== view || event.origin !== origin) return;
     return receiveMessage(event.data, false);
   });
   async function receiveMessage(m, nativeMessage = false) {

@@ -10,7 +10,7 @@ function fixture() {
   const statuses = [], events = [], listeners = {};
   const view = {addEventListener(t, cb) {listeners[t] = cb;}, postMessage() {},
     set src(value) {events.push(['src', value]); listeners.loadstart?.({url:value});}};
-  const ctx = {setInterval() {}, setTimeout(fn) {fn();},
+  const ctx = {Ge:value=>({set(next){value=next;},subscribe(callback){callback(value);return()=>{};}}),setInterval() {}, setTimeout(fn) {fn();},
     document:{querySelector:()=>view}, window:{addEventListener() {}},
     Nn:(...v)=>statuses.push(v), ne:{info() {}, error() {}},
     rt:{value:'http://company.test',set(value){this.value=value;}}, Qe:store=>store.value,

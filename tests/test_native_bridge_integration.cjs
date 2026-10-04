@@ -34,7 +34,7 @@ test('native optional editor watch cannot become the data channel',async()=>{
 });
 test('runtime declares native scripts before bridge and preserves optional standalone navigation',()=>{
  const html=fs.readFileSync(path.join(root,'index.html'),'utf8');assert(html.indexOf('/ps-native-transport.js')<html.indexOf('/ps-team-bridge.js'));assert(html.indexOf('/ps-native-panel.js')<html.indexOf('/assets/index-'));
- const bundle=fs.readFileSync(path.join(root,'assets/index-B_-tWO9a.js'),'utf8');assert(bundle.includes('if(x&&!psTeam().nativeEnabled(w))'));assert(bundle.includes('psNativePanel.validate()'));assert(bundle.includes('globalThis.psNativeGenerate=k'));
+ const bundle=fs.readFileSync(path.join(root,'assets/index-B_-tWO9a.js'),'utf8');assert(bundle.includes('if(!explicit&&psTeam().nativeEnabled(w))return false;'));assert(bundle.includes('psNativePanel.validate()'));assert(bundle.includes('globalThis.psNativeGenerate=k'));
 });
 
 test('unapplied server text cannot bypass native insertion ownership',async()=>{
