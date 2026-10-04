@@ -41,9 +41,9 @@ function fixture({holdTeardown = false, holdLocal = false} = {}) {
   const ctx = {
     rt: {value: 'http://127.0.0.1:8188', set(value) { this.value = value; }}, Qe: store => store.value,
     psTeam: () => bridge, Nn() {}, ne: {info() {}, error() {}}, WebSocket: Socket,
-    psNativePanel: null, psConnectionAttempt: 0, psPreviewEpoch: 0, psLegacyPreviewReady: true, psPreviewChain: Promise.resolve(),
+    psNativePanel: null, psConnectionAttempt: 0, psLegacyRetryTimer: null, psLegacySocketState: new WeakMap(), psPreviewEpoch: 0, psLegacyPreviewReady: true, psPreviewChain: Promise.resolve(),
     hi: null, It: '', xn: false, Pe: null, Op: 'mock-client', Pa() {}, Aa() {}, Oa() {}, Tp() {},
-    setInterval() { return 1; }, clearInterval() {},
+    setInterval() { return 1; }, clearInterval() {}, clearTimeout() {},
     setTimeout(fn) { if (holdTeardown) teardownGate.promise.then(fn); else queueMicrotask(fn); return 1; }
   };
   vm.createContext(ctx);
