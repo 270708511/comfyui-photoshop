@@ -13,31 +13,29 @@ function fixture() {
   const ctx = {setInterval() {}, setTimeout(fn) {fn();},
     document:{querySelector:()=>view}, window:{addEventListener() {}},
     Nn:(...v)=>statuses.push(v), ne:{info() {}, error() {}},
-    Ve:(_store,_value,value)=>events.push(['store',value]), rt:{}, n:'http://company.test',
-    Vs:async()=>{events.push(['connect']);}};
+    rt:{value:'http://company.test',set(value){this.value=value;}}, Qe:store=>store.value,
+    localStorage:{setItem() {}}, psConnectionAttempt:0,
+    Vs:async()=>{ctx.psConnectionAttempt++;await Promise.resolve();events.push(['connect']);}};
   vm.createContext(ctx); vm.runInContext(bridgeCode,ctx);
-  const bridge = ctx.createPSTeamBridge({url:()=>ctx.n,status:ctx.Nn});
+  const bridge = ctx.createPSTeamBridge({url:()=>ctx.rt.value,status:ctx.Nn});
   ctx.psTeam=()=>bridge;
-  const start=bundle.indexOf('E=(w=n)=>');
-  const end=bundle.indexOf('};return[_,y,v,k,P,S,A,H,j]',start);
+  const start=bundle.indexOf('/* PS_CONNECTION_LIFECYCLE:');
+  const end=bundle.indexOf('/* PS_CONNECTION_LIFECYCLE_END */',start);
   assert.ok(start>0 && end>start);
-  vm.runInContext(bundle.slice(start,end+1),ctx);
-  const hStart=bundle.indexOf('H=()=>{setTimeout(');
-  const hEnd=bundle.indexOf(',j=()=>',hStart);
-  vm.runInContext(bundle.slice(hStart,hEnd),ctx);
+  vm.runInContext(bundle.slice(start,end),ctx);
   return {ctx,events,statuses,listeners};
 }
-test('actual bundled navigation uses strict bridge parser without global URL',()=>{
+test('actual bundled navigation uses strict bridge parser without global URL',async()=>{
   const f=fixture();
-  assert.equal(f.ctx.E('HTTP://Company.Test:80/?ps_transport=standalone'),true);
-  assert.deepEqual(f.events.at(-1),['src','http://company.test/?ps_transport=standalone']);
+  assert.equal(await f.ctx.psApplyConnection('HTTP://Company.Test:80/?ps_transport=standalone'),undefined);
+  assert.deepEqual(f.events.find(event=>event[0]==='src'),['src','http://company.test/?ps_transport=standalone']);
   assert.equal(typeof f.listeners.loaderror,'function');
 });
-test('actual Apply connects after navigation and rejects unsafe addresses before navigation',()=>{
-  const f=fixture();f.ctx.H();
+test('actual Apply connects after navigation and rejects unsafe addresses before navigation',async()=>{
+  const f=fixture();await f.ctx.psApplyConnection();
   assert.ok(f.events.findIndex(e=>e[0]==='src')<f.events.findIndex(e=>e[0]==='connect'));
   const count=f.events.length;
-  assert.equal(f.ctx.E('http://user:password@company.test'),false);
+  assert.equal(await f.ctx.psApplyConnection('http://user:password@company.test'),false);
   assert.equal(f.events.length,count);
   assert.match(f.statuses.at(-1)[0],/Invalid server address/);
 });

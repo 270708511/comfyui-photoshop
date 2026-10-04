@@ -53,10 +53,10 @@ test('applied local switch detaches company state and does not send new native r
 });
 test('compiled transition funnels native Connect through socket teardown and guards preview provenance',()=>{
  const bundle=fs.readFileSync(path.join(root,'assets/index-B_-tWO9a.js'),'utf8');
- assert(bundle.includes('onConnect:()=>Vs(Qe(rt))'));assert(bundle.includes('await psTeam().disconnectLocal(i);if(transition!==psConnectionAttempt)return false;await Ta();'));
+ assert(bundle.includes('onConnect:()=>psApplyConnection(Qe(rt))'));assert(bundle.includes('await psTeam().disconnectLocal(i);if(transition!==psConnectionAttempt)return false;await Ta();'));
  assert(bundle.includes('if(psTeam().enabled()||i.target&&i.target!==Pe)return'));
  assert(bundle.includes('!psTeam().enabled()&&!psLegacyPreviewReady'));
- assert(bundle.includes('(psTeam().nativeEnabled()||O(P, "src", "http://127.0.0.1:8188"))'));
+ assert(!bundle.includes('O(P, "src", "http://127.0.0.1:8188")'));assert(bundle.includes('onOpenEditor:()=>psOpenConnectionEditor()'));
 });
 
 test('new company connection wins over older pending local disconnect',async()=>{

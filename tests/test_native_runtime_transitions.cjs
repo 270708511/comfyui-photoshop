@@ -99,7 +99,7 @@ test('compiled native sheet callback hides legacy fixed preview only while open'
  const source=bundle.slice(bundle.indexOf('if(globalThis.createPSNativePanel&&globalThis.createPSNativeTransport)'));
  const legacy={style:{display:'flex'}},container={style:{},children:[],appendChild(x){this.children.push(x)},querySelector:()=>legacy};
  let options,visible;
- const ctx={document:{querySelector:()=>container,createElement:()=>({style:{}})},psTeam:()=>({getNativeTransport:()=>({}),nativeEnabled:()=>true}),createPSNativeTransport(){},createPSNativePanel(h){options=h;return{mount(){h.onViewChange(true)},show(value){visible=value;if(!value)h.onViewChange(false)}}}};
+ const ctx={psStartConnection(){},document:{querySelector:()=>container,createElement:()=>({style:{}})},psTeam:()=>({getNativeTransport:()=>({}),nativeEnabled:()=>true}),createPSNativeTransport(){},createPSNativePanel(h){options=h;return{mount(){h.onViewChange(true)},show(value){visible=value;if(!value)h.onViewChange(false)}}}};
  vm.createContext(ctx);vm.runInContext(source,ctx);
  assert.equal(container.style.position,"relative");assert.equal(visible,true);assert.equal(legacy.style.display,'none');
  options.onViewChange(false);assert.equal(legacy.style.display,'flex');

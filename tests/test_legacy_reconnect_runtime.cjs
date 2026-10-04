@@ -42,7 +42,7 @@ function fixture() {
   }
   const ctx = {
     rt: {value: 'http://127.0.0.1:8188', set(value) { this.value = value; }}, Qe: store => store.value,
-    psTeam: () => bridge,
+    psTeam: () => bridge, psAppliedConnectionURL: 'http://127.0.0.1:8188',
     Nn(...args) { events.push(['status', ...args]); },
     ne: {info(...args) { events.push(['info', ...args]); }, error(...args) { events.push(['error', ...args]); }},
     WebSocket: Socket,
