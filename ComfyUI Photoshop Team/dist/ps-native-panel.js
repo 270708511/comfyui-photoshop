@@ -11,7 +11,7 @@ globalThis.createPSNativePanel = function (hooks) {
   const doc = hooks.document || globalThis.document;
   if (!transport || typeof transport.getState !== 'function' || !doc) throw new Error('Native panel requires a transport and document');
   let root = null, refs = {}, unsubscribe = null, mounted = false, generation = 0;
-  let busy = false, localError = '', parameterCommitFailed = false, serverDirty = false, selectionKey = '', schemaKey = '';
+  let busy = false, busyMessage = '', expanded = true, shown = true, containerStyles = null, localError = '', parameterCommitFailed = false, serverDirty = false, selectionKey = '', schemaKey = '';
   let state = {}, fields = [], listeners = [], fieldListeners = [], jobListeners = [];
   let workspaceItems = [], workflowItems = [], workspaceSignature = '', workflowSignature = '', jobsSignature = '';
   const rejectedKeys = ['__proto__', 'prototype', 'constructor'];
@@ -45,13 +45,14 @@ globalThis.createPSNativePanel = function (hooks) {
     const input = refs.password, display = input.style.display;
     let value = '';
     try {
-      value = input.value;
+      try { value = input.value; } catch (_) { value = ''; }
       if (typeof value !== 'string' || !value) {
         input.style.display = 'none';
         input.setAttribute('type', 'text');
         value = input.value;
       }
-      return typeof value === 'string' ? value : '';
+      if (typeof value !== 'string') throw new Error('Native password value is unavailable');
+      return value;
     } finally {
       clearPassword();
       input.setAttribute('type', 'password');
@@ -63,6 +64,8 @@ globalThis.createPSNativePanel = function (hooks) {
     input.setAttribute('data-field', name);
     input.setAttribute('type', type || 'text');
     input.style.width = '100%';
+    input.style.minWidth = '0'; input.style.maxWidth = '100%';
+    input.style.flexShrink = '0';
     input.style.marginBottom = '6px';
     element('sp-label', title, input).setAttribute('slot', 'label');
     return input;
@@ -70,6 +73,8 @@ globalThis.createPSNativePanel = function (hooks) {
   function button(name, title, parent, action, list) {
     const node = element('sp-button', title, parent);
     node.setAttribute('data-action', name);
+    node.setAttribute('size', 's');
+    node.style.maxWidth = '100%'; node.style.flexShrink = '0';
     node.style.marginRight = '6px';
     node.style.marginBottom = '6px';
     listen(node, 'click', () => { if (mounted && !node.disabled) action(); }, list);
@@ -112,12 +117,47 @@ globalThis.createPSNativePanel = function (hooks) {
     if (/workflow|prepar|stale/.test(code)) return 'Workflow preparation is unavailable or changed. Refresh workflows and select it again.';
     return 'The request failed. Try Refresh or Reconnect.';
   }
+  function diagnosticText(value) {
+    if (!value || typeof value !== 'object') return '';
+    const stages = {check_session: 'Session check', clear_session: 'Clear previous session', verify_signout: 'Verify sign-out', submit_login: 'Submit login', verify_login: 'Verify login', sign_out: 'Sign out', bind_session: 'Create native session', list_workspaces: 'Load workspaces', request: 'Server request'};
+    const codes = {network_error: 'network request failed', request_timeout: 'request timed out', response_invalid: 'unexpected server response', response_timeout: 'response timed out', unauthorized: 'sign-in required', forbidden: 'access denied', http_error: 'server error', cookie_not_cleared: 'previous session could not be cleared', cookie_not_confirmed: 'login cookie was not confirmed', account_mismatch: 'server returned a different account'};
+    if (!own(stages, value.stage) || !own(codes, value.code)) return '';
+    const status = Number.isInteger(value.http_status) && value.http_status >= 100 && value.http_status <= 599 ? ' (HTTP ' + value.http_status + ')' : '';
+    return stages[value.stage] + ': ' + codes[value.code] + status + '.';
+  }
+  function pendingMessage() {
+    if (busy) return busyMessage || 'Working…';
+    if (state.status === 'signing_in') return 'Signing in…';
+    if (state.status === 'connecting') return 'Connecting…';
+    if (state.status === 'signing_out') return 'Signing out…';
+    return '';
+  }
+  function displaySheet() {
+    if (!root || !root.parentNode) return;
+    const container = root.parentNode, style = container.style;
+    style.position = 'absolute'; style.zIndex = '40';
+    style.top = expanded ? '0' : '8px'; style.right = expanded ? '0' : '8px';
+    style.bottom = expanded ? '0' : 'auto'; style.left = expanded ? '0' : 'auto';
+    style.width = expanded ? '100%' : 'auto'; style.height = expanded ? '100%' : 'auto';
+    style.maxWidth = expanded ? '100%' : 'calc(100% - 72px)'; style.maxHeight = '100%';
+    style.minHeight = '0'; style.boxSizing = 'border-box';
+    style.display = shown ? 'flex' : 'none'; style.flexDirection = 'column';
+    style.overflow = 'hidden'; style.backgroundColor = expanded ? '#242424' : 'transparent';
+    root.style.height = expanded ? '100%' : 'auto';
+    visible(refs.open, !expanded); refs.sheet.style.display = expanded ? 'flex' : 'none';
+    if (typeof hooks.onViewChange === 'function') hooks.onViewChange(shown && expanded);
+  }
+  function expandSheet(value) {
+    expanded = value !== false;
+    if (!expanded) clearPassword();
+    displaySheet();
+  }
   function snapshot() { return transport.getState() || {}; }
   function synchronize() { if (mounted) render(snapshot()); }
-  async function run(action, failure) {
+  async function run(action, failure, message) {
     if (!mounted || busy) return false;
     const runGeneration = generation;
-    busy = true; localError = ''; updateControls();
+    busy = true; busyMessage = message || 'Working…'; localError = ''; updateControls();
     try {
       const result = await action();
       if (result === false && mounted && generation === runGeneration) localError = failure;
@@ -126,7 +166,7 @@ globalThis.createPSNativePanel = function (hooks) {
       if (mounted && generation === runGeneration) localError = failure;
       return false;
     } finally {
-      if (mounted && generation === runGeneration) { busy = false; synchronize(); }
+      if (mounted && generation === runGeneration) { busy = false; busyMessage = ''; synchronize(); }
     }
   }
   function specsFor(schema) {
@@ -303,23 +343,29 @@ globalThis.createPSNativePanel = function (hooks) {
   }
   function updateControls() {
     if (!mounted) return;
-    const auth = !!state.authenticated;
-    disabled(refs.server, busy); disabled(refs.connect, busy);
-    disabled(refs.username, busy); disabled(refs.password, busy);
-    disabled(refs.signin, busy || !state.origin || serverDirty);
-    disabled(refs.logout, busy);
-    if (refs.editor) disabled(refs.editor, busy);
-    disabled(refs.workspace.control, busy || !auth || serverDirty);
-    disabled(refs.refreshWorkspaces, busy || !auth || serverDirty);
-    disabled(refs.workflow.control, busy || !auth || !state.workspace_id || serverDirty);
-    disabled(refs.refreshWorkflows, busy || !auth || !state.workspace_id || serverDirty);
-    for (const field of fields) disabled(field.control, busy || !auth || !state.workflow_path || serverDirty);
+    const auth = !!state.authenticated, pending = pendingMessage(), waiting = !!pending || !!state.auth_pending;
+    disabled(refs.server, waiting); disabled(refs.connect, waiting);
+    disabled(refs.username, waiting); disabled(refs.password, waiting);
+    disabled(refs.signin, waiting || !state.origin || serverDirty);
+    disabled(refs.logout, waiting);
+    if (refs.editor) disabled(refs.editor, waiting);
+    disabled(refs.workspace.control, waiting || !auth || serverDirty);
+    disabled(refs.refreshWorkspaces, waiting || !auth || serverDirty);
+    disabled(refs.workflow.control, waiting || !auth || !state.workspace_id || serverDirty);
+    disabled(refs.refreshWorkflows, waiting || !auth || !state.workspace_id || serverDirty);
+    for (const field of fields) disabled(field.control, waiting || !auth || !state.workflow_path || serverDirty);
     const invalid = fields.some(field => field.error);
-    disabled(refs.generate, busy || serverDirty || !selectionReady() || invalid || parameterCommitFailed || typeof hooks.onGenerate !== 'function');
-    for (const listener of jobListeners) disabled(listener[0], busy || !auth);
-    refs.connect.textContent = state.origin ? 'Reconnect' : 'Connect';
-    refs.status.textContent = localError || (state.error ? transportError(state.error) : busy ? 'Working…' : serverDirty ? 'Connect to use the edited server address.' : !state.origin ? 'Enter the server address and Connect.' : !auth ? 'Server selected. Sign in to continue.' : !state.workspace_id ? 'Choose a ComfyUI workspace.' : !state.workflow_path ? 'Choose a saved workflow.' : invalid ? 'Correct the highlighted parameters before executing.' : selectionReady() ? 'Ready to execute with the current Photoshop canvas.' : 'This workflow is not ready. Refresh and select it again.');
-    refs.status.style.color = localError || state.error || invalid ? '#d77b6b' : '';
+    disabled(refs.generate, waiting || serverDirty || !selectionReady() || invalid || parameterCommitFailed || typeof hooks.onGenerate !== 'function');
+    for (const listener of jobListeners) disabled(listener[0], waiting || !auth);
+    refs.connect.textContent = pending === 'Connecting…' ? pending : state.origin ? 'Reconnect' : 'Connect';
+    refs.signin.textContent = pending === 'Signing in…' ? pending : 'Sign in';
+    root.setAttribute('aria-busy', waiting ? 'true' : 'false');
+    const needsSignIn = !auth && state.diagnostic && state.diagnostic.stage === 'check_session' && state.diagnostic.code === 'unauthorized';
+    const diagnostic = needsSignIn ? '' : diagnosticText(state.diagnostic);
+    refs.diagnostic.textContent = pending ? '' : diagnostic;
+    visible(refs.diagnostic, !!refs.diagnostic.textContent);
+    refs.status.textContent = pending || localError || (state.auth_pending ? 'An earlier sign-in is still finishing. Wait before retrying.' : diagnostic ? 'Native connection needs attention. See the details below.' : needsSignIn ? 'Server selected. Sign in to continue.' : state.error ? transportError(state.error) : serverDirty ? 'Connect to use the edited server address.' : !state.origin ? 'Enter the server address and Connect.' : !auth ? 'Server selected. Sign in to continue.' : !state.workspace_id ? 'Choose a ComfyUI workspace.' : !state.workflow_path ? 'Choose a saved workflow.' : invalid ? 'Correct the highlighted parameters before executing.' : selectionReady() ? 'Ready to execute with the current Photoshop canvas.' : 'This workflow is not ready. Refresh and select it again.');
+    refs.status.style.color = !pending && (localError || (!needsSignIn && state.error) || diagnostic || invalid) ? '#d77b6b' : '';
   }
   function validate() {
     if (!mounted) return false;
@@ -334,32 +380,46 @@ globalThis.createPSNativePanel = function (hooks) {
     mount(container) {
       if (!container || typeof container.appendChild !== 'function') throw new Error('Native panel requires a container');
       if (mounted && root.parentNode === container) { synchronize(); return api; }
-      api.unmount(); mounted = true; generation++; busy = false;
+      api.unmount(); mounted = true; generation++; busy = false; busyMessage = ''; expanded = true; shown = true;
+      const styledKeys = ['position', 'zIndex', 'top', 'right', 'bottom', 'left', 'width', 'height', 'maxWidth', 'maxHeight', 'minHeight', 'boxSizing', 'display', 'flexDirection', 'overflow', 'backgroundColor'];
+      containerStyles = {container, values: styledKeys.map(key => [key, container.style[key]])};
       root = element('div', null, container); root.setAttribute('data-ps-native-panel', '');
-      root.style.padding = '10px'; root.style.width = '100%'; root.style.borderTop = '1px solid #666';
-      element('div', 'Team workspace', root).style.fontWeight = 'bold';
-      refs.server = textField('server', 'Server address', root);
+      root.style.display = 'flex'; root.style.flexDirection = 'column'; root.style.width = '100%'; root.style.minWidth = '0'; root.style.minHeight = '0'; root.style.maxHeight = '100%'; root.style.boxSizing = 'border-box';
+      refs.open = button('open-workspace', 'Team workspace', root, () => expandSheet(true));
+      refs.sheet = element('div', null, root);
+      refs.sheet.style.display = 'flex'; refs.sheet.style.flexDirection = 'column'; refs.sheet.style.height = '100%'; refs.sheet.style.minHeight = '0';
+      const header = element('div', null, refs.sheet);
+      header.style.display = 'flex'; header.style.alignItems = 'center'; header.style.justifyContent = 'space-between'; header.style.flexShrink = '0'; header.style.padding = '8px'; header.style.borderBottom = '1px solid #555';
+      const title = element('div', 'Team workspace', header); title.style.fontWeight = 'bold'; title.style.marginRight = '8px';
+      refs.back = button('back-to-canvas', 'Back to canvas', header, () => expandSheet(false)); refs.back.style.marginBottom = '0'; refs.back.style.marginRight = '0';
+      refs.scroll = element('div', null, refs.sheet); refs.scroll.setAttribute('data-native-scroll', '');
+      refs.scroll.style.flex = '1 1 auto'; refs.scroll.style.minHeight = '0'; refs.scroll.style.overflowY = 'auto'; refs.scroll.style.overflowX = 'hidden'; refs.scroll.style.width = '100%';
+      const body = element('div', null, refs.scroll);
+      body.style.display = 'flex'; body.style.flexDirection = 'column'; body.style.alignItems = 'flex-start'; body.style.width = '100%'; body.style.maxWidth = '380px'; body.style.boxSizing = 'border-box'; body.style.padding = '12px';
+
+      refs.server = textField('server', 'Server address', body);
       refs.server.setAttribute('placeholder', 'https://comfyui.example.com');
-      refs.connect = button('connect', 'Connect', root, () => {
+      refs.connect = button('connect', 'Connect', body, () => {
         const address = String(refs.server.value || state.origin || '').trim(), connectionGeneration = generation; clearPassword();
-        run(async () => { const result = await (typeof hooks.onConnect === 'function' ? hooks.onConnect() : transport.connect(address)); const connected = snapshot(); if (mounted && generation === connectionGeneration && (result !== false || connected.origin === address)) serverDirty = false; return result === false && connected.origin && connected.status === 'login_required' ? true : result; }, 'Cannot connect. Check the server address, certificate, VPN and Photoshop network access.');
+        run(async () => { const result = await (typeof hooks.onConnect === 'function' ? hooks.onConnect() : transport.connect(address)); const connected = snapshot(); if (mounted && generation === connectionGeneration && (result !== false || connected.origin === address)) serverDirty = false; return result === false && connected.origin && connected.status === 'login_required' ? true : result; }, 'Cannot connect. Check the server address, certificate, VPN and Photoshop network access.', 'Connecting…');
       });
-      refs.origin = element('div', null, root);
+      refs.origin = element('div', null, body); refs.origin.style.width = '100%'; refs.origin.style.wordWrap = 'break-word';
       visible(refs.server, typeof hooks.onConnect !== 'function');
       visible(refs.origin, typeof hooks.onConnect === 'function');
-      refs.account = element('div', null, root);
-      refs.login = element('div', null, root);
+      refs.account = element('div', null, body);
+      refs.login = element('div', null, body); refs.login.style.width = '100%';
       refs.username = textField('username', 'Username', refs.login);
       refs.password = textField('password', 'Password', refs.login, 'password');
       refs.password.setAttribute('autocomplete', 'off');
       refs.signin = button('signin', 'Sign in', refs.login, () => {
-        const username = String(refs.username.value || '').trim();
-        let password = readPasswordOnce();
+        let username, password;
+        try { username = String(refs.username.value || '').trim(); password = readPasswordOnce(); }
+        catch (_) { clearPassword(); localError = 'Photoshop could not read the sign-in fields. Re-enter your username and password, then retry.'; updateControls(); return; }
         if (!username || !password) { password = ''; localError = 'Enter a username and password.'; updateControls(); return; }
-        run(() => { try { return transport.login(username, password); } finally { password = ''; } }, 'Sign-in failed. Check your credentials and server connection.');
+        run(() => { try { return transport.login(username, password); } finally { password = ''; } }, 'Sign-in failed. Check your credentials and server connection.', 'Signing in…');
       });
-      refs.logout = button('logout', 'Sign out', root, () => { clearPassword(); run(() => transport.logout(), 'Sign-out failed. Reconnect before using another account.'); });
-      refs.selection = element('div', null, root);
+      refs.logout = button('logout', 'Sign out', body, () => { clearPassword(); run(() => transport.logout(), 'Sign-out failed. Reconnect before using another account.', 'Signing out…'); });
+      refs.selection = element('div', null, body); refs.selection.style.width = '100%';
       refs.workspace = dropdown('workspace', 'ComfyUI workspace', refs.selection);
       refs.refreshWorkspaces = button('refresh-workspaces', 'Refresh workspaces', refs.selection, () => run(() => transport.refreshWorkspaces(), 'Could not refresh workspaces. Reconnect or sign in again.'));
       refs.workflow = dropdown('workflow', 'Saved workflow', refs.selection);
@@ -371,16 +431,17 @@ globalThis.createPSNativePanel = function (hooks) {
         run(() => hooks.onGenerate(snapshot()), 'Execution could not start. Check the Photoshop document and workflow selection.');
       });
       if (typeof hooks.onOpenEditor === 'function') {
-        refs.editor = button('open-editor', 'Load optional Web editor', root, () => run(() => hooks.onOpenEditor(), 'Could not load the optional editor. Native execution remains available.'));
-        element('div', 'The Web editor is optional. Native execution does not need it.', root);
+        refs.editor = button('open-editor', 'Load optional Web editor', body, () => run(() => hooks.onOpenEditor(), 'Could not load the optional editor. Native execution remains available.'));
+        element('div', 'The Web editor is optional. Native execution does not need it.', body);
       }
-      refs.status = element('div', null, root); refs.status.setAttribute('role', 'status'); refs.status.style.marginTop = '6px';
-      refs.jobs = element('div', null, root); refs.jobs.style.marginTop = '8px';
+      refs.status = element('div', null, body); refs.status.setAttribute('role', 'status'); refs.status.style.marginTop = '6px'; refs.status.style.width = '100%';
+      refs.diagnostic = element('div', null, body); refs.diagnostic.setAttribute('data-native-diagnostic', ''); refs.diagnostic.style.marginTop = '6px'; refs.diagnostic.style.width = '100%'; refs.diagnostic.style.color = '#d77b6b';
+      refs.jobs = element('div', null, body); refs.jobs.style.marginTop = '8px';
       listen(refs.server, 'input', () => { serverDirty = String(refs.server.value || '') !== String(state.origin || ''); clearPassword(); updateControls(); });
       listen(refs.workspace.control, 'change', () => { const item = selectedItem(refs.workspace, workspaceItems); if (mounted && !refs.workspace.control.disabled && !busy && item && String(item.id) !== String(state.workspace_id)) run(() => transport.selectWorkspace(item.id), 'Could not select this workspace. Refresh workspaces and try again.'); });
       listen(refs.workflow.control, 'change', () => { const item = selectedItem(refs.workflow, workflowItems); if (mounted && !refs.workflow.control.disabled && !busy && item) run(() => transport.selectWorkflow(item.id), 'Could not load this workflow’s preparation. Refresh workflows and try again.'); });
       state = {}; selectionKey = ''; schemaKey = ''; workspaceSignature = ''; workflowSignature = ''; jobsSignature = ''; serverDirty = false; localError = ''; parameterCommitFailed = false;
-      synchronize();
+      displaySheet(); synchronize();
       if (typeof transport.subscribe === 'function') unsubscribe = transport.subscribe(value => { if (mounted) render(value || snapshot()); });
       return api;
     },
@@ -388,11 +449,14 @@ globalThis.createPSNativePanel = function (hooks) {
       mounted = false; generation++; clearPassword();
       if (typeof unsubscribe === 'function') unsubscribe(); unsubscribe = null;
       detach(listeners); detach(fieldListeners); detach(jobListeners);
+      if (root && typeof hooks.onViewChange === 'function') hooks.onViewChange(false);
       if (root && root.parentNode) root.parentNode.removeChild(root);
+      if (containerStyles) for (const entry of containerStyles.values) containerStyles.container.style[entry[0]] = entry[1] == null ? '' : entry[1];
+      containerStyles = null;
       root = null; refs = {}; fields = []; state = {}; busy = false;
       return api;
     },
-    show(value) { if (root) { visible(root, value !== false); if (value === false) clearPassword(); } return api; },
+    show(value) { if (root) { const wasShown = shown; shown = value !== false; if (!shown) clearPassword(); else if (!wasShown && !state.authenticated) expanded = true; displaySheet(); } return api; },
     validate
   };
   return api;

@@ -384,3 +384,117 @@ test('actual native transport and panel complete login, workspace, prepared-work
   assert.ok(network.every(request => !/\/prompt(?:$|\?)/.test(request.url)));
   f.panel.unmount(); real.dispose();
 });
+
+test('workspace sheet has a bounded scroller and restores canvas/container styles on Back, off and unmount', () => {
+  const views = [];
+  const f = fixture({state: {origin: 'https://comfy.example.test'}, hooks: {onViewChange: value => views.push(value)}});
+  Object.assign(f.container.style, {position: 'relative', height: '75%', display: 'block', overflow: 'visible', backgroundColor: '#123456'});
+  f.panel.mount(f.container);
+  assert.equal(views.at(-1), true);
+  assert.equal(f.container.style.position, 'absolute');
+  assert.equal(f.container.style.height, '100%');
+  assert.equal(f.container.style.backgroundColor, '#242424');
+  const scroller = f.find('', 'data-native-scroll');
+  assert.equal(scroller.style.minHeight, '0');
+  assert.equal(scroller.style.overflowY, 'auto');
+  assert.equal(scroller.parentNode.style.display, 'flex');
+  assert.equal(scroller.children[0].style.maxWidth, '380px');
+  f.input('password', 'synthetic'); f.click('back-to-canvas');
+  assert.equal(views.at(-1), false);
+  assert.equal(f.find('password')._value, '');
+  assert.equal(scroller.parentNode.style.display, 'none');
+  assert.equal(f.container.style.left, 'auto');
+  assert.equal(f.container.style.right, '8px');
+  assert.notEqual(f.find('open-workspace', 'data-action').style.display, 'none');
+  f.click('open-workspace'); assert.equal(views.at(-1), true);
+  assert.equal(scroller.parentNode.style.display, 'flex');
+  f.panel.show(false); assert.equal(views.at(-1), false); assert.equal(f.container.style.display, 'none');
+  f.panel.show(true); assert.equal(views.at(-1), true); assert.equal(f.container.style.display, 'flex');
+  f.click('back-to-canvas'); f.panel.show(false).show(true);
+  assert.equal(views.at(-1), true, 'returning to native mode reopens signed-out sheet');
+  const oldOpen = f.find('open-workspace', 'data-action');
+  f.panel.unmount(); assert.equal(views.at(-1), false);
+  assert.equal(f.container.style.position, 'relative'); assert.equal(f.container.style.height, '75%');
+  assert.equal(f.container.style.display, 'block'); assert.equal(f.container.style.overflow, 'visible');
+  assert.equal(f.container.style.backgroundColor, '#123456');
+  const count = views.length; oldOpen.emit('click'); f.panel.unmount(); assert.equal(views.length, count);
+});
+
+test('in-flight sign-in takes precedence over stale errors and duplicate clicks submit only once', async () => {
+  const wait = deferred(); let submissions = 0;
+  const f = fixture({state: {origin: 'https://comfy.example.test', error: {code: 'network_error'}, diagnostic: {stage: 'check_session', code: 'network_error'}}, transport: {login() { submissions++; return wait.promise; }}});
+  f.panel.mount(f.container); f.input('username', 'test-user'); f.input('password', 'synthetic');
+  f.click('signin'); f.click('signin');
+  assert.equal(submissions, 1);
+  assert.equal(f.find('signin', 'data-action').textContent, 'Signing in…');
+  assert.equal(f.find('status', 'role').textContent, 'Signing in…');
+  assert.equal(f.find('status', 'role').style.color, '');
+  assert.equal(f.find('', 'data-native-diagnostic').textContent, '');
+  assert.equal(f.container.children[0].getAttribute('aria-busy'), 'true');
+  wait.resolve(false); await flush();
+  assert.equal(f.find('signin', 'data-action').textContent, 'Sign in');
+  assert.equal(f.find('signin', 'data-action').disabled, false);
+  assert.match(f.find('status', 'role').textContent, /Sign-in failed/);
+  assert.equal(f.container.children[0].getAttribute('aria-busy'), 'false');
+  f.input('password', 'synthetic'); f.click('signin'); await flush(); assert.equal(submissions, 2);
+});
+
+test('host value read failures show a safe actionable error and leave sign-in retryable', () => {
+  const f = fixture({state: {origin: 'https://comfy.example.test'}}); f.panel.mount(f.container);
+  f.input('username', 'test-user'); f.input('password', 'synthetic');
+  const password = f.find('password');
+  Object.defineProperty(password, 'value', {configurable: true, get() { throw new Error('private detail'); }, set(value) { this._value = value; }});
+  assert.doesNotThrow(() => f.click('signin'));
+  assert.match(f.find('status', 'role').textContent, /Photoshop could not read the sign-in fields/);
+  assert.equal(password._value, ''); assert.equal(password.getAttribute('type'), 'password');
+  assert.notEqual(password.style.display, 'none');
+  assert.equal(f.find('signin', 'data-action').disabled, false); assert.equal(f.calls.length, 0);
+  assert.ok(!f.container.textContent.includes('private detail'));
+});
+
+test('safe diagnostic separates failed login stages and rejects untrusted fields', () => {
+  const f = fixture({state: {origin: 'https://comfy.example.test'}}); f.panel.mount(f.container);
+  const diagnostic = f.find('', 'data-native-diagnostic');
+  f.set({error: 'private body', diagnostic: {stage: 'submit_login', code: 'forbidden', http_status: 403, message: 'private body'}});
+  assert.equal(diagnostic.textContent, 'Submit login: access denied (HTTP 403).');
+  f.set({diagnostic: {stage: 'verify_login', code: 'cookie_not_confirmed', http_status: 200}});
+  assert.equal(diagnostic.textContent, 'Verify login: login cookie was not confirmed (HTTP 200).');
+  f.set({diagnostic: {stage: 'check_session', code: 'network_error', http_status: 'private body'}});
+  assert.equal(diagnostic.textContent, 'Session check: network request failed.');
+  for (const value of [{stage: 'private body', code: 'network_error'}, {stage: 'submit_login', code: 'private body'}, {stage: 'constructor', code: 'network_error'}]) {
+    f.set({diagnostic: value}); assert.equal(diagnostic.textContent, '');
+  }
+  assert.ok(!f.container.textContent.includes('private body'));
+});
+
+test('transport-initiated login and uncertain cookie writes display feedback and disable resubmission', () => {
+  const f = fixture({state: {origin: 'https://comfy.example.test'}}); f.panel.mount(f.container);
+  f.set({status: 'signing_in', error: {code: 'network_error'}});
+  assert.equal(f.find('status', 'role').textContent, 'Signing in…');
+  assert.equal(f.find('signin', 'data-action').disabled, true);
+  f.set({status: 'auth_pending', auth_pending: true});
+  assert.match(f.find('status', 'role').textContent, /earlier sign-in is still finishing/);
+  assert.equal(f.find('signin', 'data-action').disabled, true);
+  f.set({status: 'login_required', auth_pending: false, error: null});
+  assert.equal(f.find('signin', 'data-action').disabled, false);
+});
+
+test('an unsigned first session check gives normal sign-in guidance', () => {
+  const f = fixture({state: {origin: 'https://comfy.example.test', error: 'Sign in again.', diagnostic: {stage: 'check_session', code: 'unauthorized', http_status: 401}}});
+  f.panel.mount(f.container);
+  assert.equal(f.find('status', 'role').textContent, 'Server selected. Sign in to continue.');
+  assert.equal(f.find('status', 'role').style.color, '');
+  assert.equal(f.find('', 'data-native-diagnostic').textContent, '');
+  assert.equal(f.find('signin', 'data-action').disabled, false);
+});
+
+test('unreadable native password values are not mistaken for an empty password', () => {
+  const f = fixture({state: {origin: 'https://comfy.example.test'}}); f.panel.mount(f.container);
+  f.input('username', 'test-user');
+  const password = f.find('password');
+  Object.defineProperty(password, 'value', {configurable: true, get() { return undefined; }, set(value) { this._value = value; }});
+  f.click('signin');
+  assert.match(f.find('status', 'role').textContent, /Photoshop could not read the sign-in fields/);
+  assert.equal(f.calls.length, 0); assert.equal(password.getAttribute('type'), 'password');
+  assert.notEqual(password.style.display, 'none');
+});

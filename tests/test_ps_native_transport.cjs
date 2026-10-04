@@ -267,6 +267,7 @@ test('hanging login times out without AbortController, blocks cookie races until
   const login = f.controller.login('alice', 'correct'); await started.promise;
   const timeout = [...f.timers.values()].find(timer => timer.ms === 30000); assert.ok(timeout); timeout.callback();
   assert.equal(await login, false); assert.equal(f.controller.getState().auth_pending, true);
+  assert.deepEqual(copy(f.controller.getState().diagnostic), {stage: 'submit_login', code: 'request_timeout', http_status: null});
   const before = f.calls.length; assert.equal(await f.controller.login('bob', 'correct'), false); assert.equal(await f.controller.connect(ORIGIN), false);
   assert.equal(f.calls.length, before); wait.resolve(); for (let i = 0; i < 20; i++) await Promise.resolve();
   assert.equal(f.controller.getState().ready, false); assert.equal(await f.controller.login('bob', 'correct'), true);
@@ -277,6 +278,7 @@ test('hanging JSON and result body reads time out with recoverable request retai
   f.server.overrides.push(({path}) => path === '/auth/whoami' ? {ok: true, status: 200, json() { started.resolve(); return wait.promise; }} : undefined);
   const connecting = f.controller.connect(ORIGIN); await started.promise; [...f.timers.values()].find(timer => timer.ms === 30000).callback();
   assert.equal(await connecting, false); assert.match(f.controller.getState().error, /timed out/); wait.resolve({authenticated: true, username: 'alice'});
+  assert.deepEqual(copy(f.controller.getState().diagnostic), {stage: 'check_session', code: 'response_timeout', http_status: 200});
   const result = await fixture(); await result.prepare(); await result.generate(); const job = [...result.server.requests.values()][0]; job.state = 'success'; job.result_count = 1;
   const downloading = deferred(), imageWait = deferred(); result.server.overrides.push(({path}) => path.endsWith('/results/0') ? {ok: true, status: 200, arrayBuffer() { downloading.resolve(); return imageWait.promise; }} : undefined);
   const resume = result.send({type: 'resume', requests: [RID]}); await downloading.promise; [...result.timers.values()].find(timer => timer.ms === 30000).callback(); await resume;
@@ -307,4 +309,97 @@ test('uppercase JSON workflow suffix is listed and selectable without changing i
   assert.equal(await f.controller.selectWorkflow('workflows/folder/UPPER.JSON'), true);
   assert.equal(f.controller.getState().canGenerate, true);
   assert.ok(f.calls.some(call => call.path === '/api/userdata/workflows%2Ffolder%2FUPPER.JSON'));
+});
+
+test('native fetch and body errors cannot self-declare raw service text safe', async () => {
+  for (const bodyFailure of [false, true]) {
+    const f = await fixture();
+    const error = Object.assign(new Error('password=SECRET https://service.test/?token=SECRET'), {safe: true});
+    f.server.overrides.push(({path}) => {
+      if (path !== '/auth/whoami') return;
+      if (bodyFailure) return {ok: true, status: 200, json: async () => { throw error; }};
+      throw error;
+    });
+    assert.equal(await f.controller.connect(ORIGIN), false);
+    assert.ok(!JSON.stringify([f.states, f.emitted, f.saves]).includes('SECRET'));
+  }
+});
+
+test('native diagnostics distinguish connect, logout, logout verification, login, and cookie verification failures', async () => {
+  const cases = [
+    {stage: 'check_session', path: '/auth/whoami', connect: true},
+    {stage: 'clear_session', path: '/logout'},
+    {stage: 'verify_signout', path: '/auth/whoami'},
+    {stage: 'submit_login', path: '/login'},
+    {stage: 'verify_login', path: '/auth/whoami', afterLogin: true}
+  ];
+  for (const item of cases) {
+    const f = await fixture({account: null});
+    if (!item.connect) await f.controller.connect(ORIGIN);
+    f.server.overrides.push(({path}) => {
+      if (path === item.path && (!item.afterLogin || f.server.account)) throw new TypeError('Network failed password=SECRET');
+    });
+    assert.equal(await (item.connect ? f.controller.connect(ORIGIN) : f.controller.login('alice', 'correct')), false);
+    assert.deepEqual(copy(f.controller.getState().diagnostic), {stage: item.stage, code: 'network_error', http_status: null});
+    assert.ok(!JSON.stringify([f.states, f.emitted, f.saves]).includes('SECRET'));
+    assert.ok(!JSON.stringify([f.states, f.emitted, f.saves]).includes('correct'));
+  }
+});
+
+test('native diagnostics separate HTTP status, invalid JSON, and missing cookie without echoing response details', async () => {
+  const http = await fixture();
+  http.server.overrides.push(({path}) => path === '/auth/whoami' ? response({password: 'SECRET'}, 503) : undefined);
+  assert.equal(await http.controller.connect(ORIGIN), false);
+  assert.deepEqual(copy(http.controller.getState().diagnostic), {stage: 'check_session', code: 'http_error', http_status: 503});
+  const invalid = await fixture();
+  invalid.server.overrides.push(({path}) => path === '/auth/whoami' ? {ok: true, status: 200, json: async () => { throw new SyntaxError('<html>password=SECRET</html>'); }} : undefined);
+  assert.equal(await invalid.controller.connect(ORIGIN), false);
+  assert.deepEqual(copy(invalid.controller.getState().diagnostic), {stage: 'check_session', code: 'response_invalid', http_status: 200});
+  const missing = await fixture({account: null}); await missing.controller.connect(ORIGIN); missing.server.wrongLogin = true;
+  assert.equal(await missing.controller.login('alice', 'wrong'), false);
+  assert.deepEqual(copy(missing.controller.getState().diagnostic), {stage: 'verify_login', code: 'unauthorized', http_status: 401});
+  assert.ok(!JSON.stringify([http.states, invalid.states, missing.states]).includes('SECRET'));
+});
+
+test('late native failures cannot replace the current connection diagnostic and successful retry clears it', async () => {
+  const f = await fixture(); const wait = deferred(), started = deferred(); let intercepted = false;
+  f.server.overrides.push(({path}) => {
+    if (path === '/auth/whoami' && !intercepted) { intercepted = true; started.resolve(); return wait.promise; }
+  });
+  const first = f.controller.connect(ORIGIN); await started.promise;
+  const second = f.controller.connect(ORIGIN);
+  wait.reject(new Error('offline password=SECRET'));
+  assert.equal(await first, false); assert.equal(await second, true);
+  assert.equal(f.controller.getState().authenticated, true);
+  assert.equal(f.controller.getState().diagnostic, null);
+  assert.ok(!f.states.some(state => state.diagnostic?.code === 'network_error'));
+});
+
+test('workspace list success preserves a failed adapter bind, while recovered session lookups stay silent', async () => {
+  const f = await fixture({account: null}); await f.controller.connect(ORIGIN); await f.send({type: 'hello'});
+  f.server.overrides.push(({path}) => path === '/ps/team/sessions' ? response({token: 'SECRET'}, 503) : undefined);
+  assert.equal(await f.controller.login('alice', 'correct'), true);
+  const state = f.controller.getState();
+  assert.equal(state.authenticated, true); assert.equal(state.ready, false); assert.equal(state.status, 'connection_error');
+  assert.equal(state.workspaces.length, 3); assert.match(state.error, /503/);
+  assert.deepEqual(copy(state.diagnostic), {stage: 'bind_session', code: 'http_error', http_status: 503});
+  assert.ok(!JSON.stringify(f.states).includes('SECRET'));
+  const recovered = await fixture(); await recovered.controller.connect(ORIGIN);
+  await recovered.send({type: 'hello', session_ids: ['expired_session']});
+  assert.equal(recovered.controller.getState().ready, true);
+  assert.ok(!recovered.states.some(value => value.diagnostic?.http_status === 404));
+});
+
+test('cookie checks report explicit safe reasons and diagnostics clear after corrected login', async () => {
+  const f = await fixture(); await f.prepare(); f.server.logoutBroken = true;
+  assert.equal(await f.controller.login('alice', 'correct'), false);
+  assert.deepEqual(copy(f.controller.getState().diagnostic), {stage: 'verify_signout', code: 'cookie_not_cleared', http_status: 200});
+  f.server.logoutBroken = false;
+  assert.equal(await f.controller.login('alice', 'correct'), true);
+  assert.equal(f.controller.getState().diagnostic, null);
+  assert.equal(f.controller.getState().error, null);
+  const noCookie = await fixture();
+  noCookie.server.overrides.push(({path}) => path === '/auth/whoami' ? response({authenticated: false}) : undefined);
+  assert.equal(await noCookie.controller.connect(ORIGIN), false);
+  assert.deepEqual(copy(noCookie.controller.getState().diagnostic), {stage: 'check_session', code: 'cookie_not_confirmed', http_status: null});
 });

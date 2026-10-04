@@ -16,14 +16,33 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
   let origin = null, epoch = 0, workspaceEpoch = 0, selectionEpoch = 0, workspaceListEpoch = 0;
   let binding = null, helloMessage = null, handshake = null, disposed = false;
   let authChain = Promise.resolve(), saveChain = Promise.resolve(), jobs = new Map();
-  const listeners = new Set(), authPending = new Set();
+  const listeners = new Set(), authPending = new Set(), safeFaults = new WeakMap(), failureDetails = new WeakMap();
   let authUncertain = false;
   let state = {origin: null, authenticated: false, username: null, ready: false, session_id: null,
     workspace_id: null, workspaces: [], workflows: [], workflow_path: null, selectionVersion: 0,
-    parameters: {}, parameter_schema: [], canGenerate: false, status: 'disconnected', error: null};
+    parameters: {}, parameter_schema: [], canGenerate: false, status: 'disconnected', error: null, diagnostic: null};
   let selectedPreparation = null, parameterError = false;
-  function fault(message, status) { const error = new Error(message); error.safe = true; error.status = status; return error; }
-  function safe(error) { return error?.safe ? error.message : 'Connection failed. Check the company server and retry.'; }
+  function fault(message, status, code) {
+    const error = new Error(message); error.status = status; safeFaults.set(error, {message, code}); return error;
+  }
+  // Only errors created here contain reviewed text. A host/library rejection may
+  // itself carry `safe: true`; it must never authorize exposing its message.
+  function safe(error) { return safeFaults.get(error)?.message || 'Connection failed. Check the company server and retry.'; }
+  function errorState(error) { return {error: safe(error), diagnostic: failureDetails.get(error) || null}; }
+  function requestStage(path) {
+    if (path === '/auth/whoami') return 'check_session';
+    if (path === '/api/users') return 'list_workspaces';
+    if (/^\/ps\/team\/sessions(?:\/[^/?]+)?$/.test(path)) return 'bind_session';
+    return 'request';
+  }
+  function failure(message, stage, code, status, expectedEpoch) {
+    // These fields are controlled categories, never URLs, account identifiers,
+    // headers, server bodies, or an underlying exception's text/stack.
+    const http_status = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+    const error = fault(message, http_status === null ? undefined : http_status, code);
+    if (!disposed && expectedEpoch === epoch) failureDetails.set(error, {stage, code, http_status});
+    return error;
+  }
   function validOrigin(value) {
     // The bridge supplies its canonical origin. Reject credentials, paths and query strings here too.
     if (typeof value !== 'string' || !/^https?:\/\/(?:[a-z\d.-]+|\[[a-f\d:]+\])(?::\d{1,5})?$/i.test(value))
@@ -55,12 +74,13 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       transport: 'company', type}); if (emitted?.catch) emitted.catch(() => {}); } catch {}
   }
   function stopTimers() { for (const item of jobs.values()) if (item.timer != null) { cancelDelay(item.timer); item.timer = null; } }
-  function detach(message, status = 'signed_out') {
+  function detach(message, status = 'signed_out', diagnostic = null) {
     if (binding) host('unbound', {error: message});
     stopTimers(); epoch++; workspaceEpoch++; selectionEpoch++; workspaceListEpoch++;
     binding = null; handshake = null; jobs = new Map(); selectedPreparation = null; parameterError = false; state.selectionVersion++;
     changed({authenticated: false, username: null, ready: false, session_id: null, workspace_id: null,
-      workspaces: [], workflows: [], workflow_path: null, parameters: {}, parameter_schema: [], status, error: message || null});
+      workspaces: [], workflows: [], workflow_path: null, parameters: {}, parameter_schema: [], status, error: message || null,
+      diagnostic});
   }
   const loaded = Promise.resolve().then(() => hooks.load?.()).then(value => {
     if (value == null) return;
@@ -100,31 +120,38 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       const timer = delay(() => {
         if (finished) return; finished = true;
         try { onTimeout?.(); } catch {}
-        reject(fault('Company request timed out. It may still complete; reconnect or use Resume, not Generate.'));
+        reject(fault('Company request timed out. It may still complete; reconnect or use Resume, not Generate.', undefined, 'request_timeout'));
       }, REQUEST_TIMEOUT);
       Promise.resolve(operation).then(value => {
         if (finished) return; finished = true; cancelDelay(timer); resolve(value);
       }, error => { if (finished) return; finished = true; cancelDelay(timer); reject(error); });
     });
   }
-  async function readBody(response, method) {
+  async function readBody(response, method, stage = 'request', expectedEpoch = epoch) {
     try { return await deadline(Promise.resolve().then(() => response[method]())); }
-    catch (error) { if (error?.safe) throw error; throw fault('The company server returned an unexpected response. Check native cookie login.'); }
+    catch (error) {
+      const timedOut = safeFaults.get(error)?.code === 'request_timeout';
+      throw failure(timedOut ? safe(error) : 'The company server returned an unexpected response. Check native cookie login.',
+        stage, timedOut ? 'response_timeout' : 'response_invalid', response.status, expectedEpoch);
+    }
   }
   function authBlocked() {
     if (!authUncertain || !authPending.size) { authUncertain = false; return false; }
     changed({error: 'An earlier sign-in or sign-out may still complete. Wait for it to finish or reload the panel before reconnecting.', status: 'auth_pending'});
     return true;
   }
-  async function request(path, options = {}, owner = null, expectedEpoch = epoch, targetOrigin = origin) {
+  async function request(path, options = {}, owner = null, expectedEpoch = epoch, targetOrigin = origin, stage = requestStage(path)) {
     if (disposed || expectedEpoch !== epoch || (owner && !same(owner))) throw fault('Connection changed. Reconnect to resume saved requests.');
     if (!targetOrigin || !path.startsWith('/') || path.startsWith('//')) throw fault('Invalid company request path.');
     let response;
     const {allowUnauthorized, ...fetchOptions} = options;
-    const abort = typeof globalThis.AbortController === 'function' ? new globalThis.AbortController() : null;
+    let abort = null;
     const cookieWrite = path === '/login' || path === '/logout';
-    const operation = Promise.resolve().then(() => fetcher(targetOrigin + path, {credentials: 'include', cache: 'no-store', ...fetchOptions,
-      ...(abort ? {signal: abort.signal} : {}), headers: {'X-PS-Team': VERSION, ...(options.headers || {})}}));
+    const operation = Promise.resolve().then(() => {
+      abort = typeof globalThis.AbortController === 'function' ? new globalThis.AbortController() : null;
+      return fetcher(targetOrigin + path, {credentials: 'include', cache: 'no-store', ...fetchOptions,
+        ...(abort ? {signal: abort.signal} : {}), headers: {'X-PS-Team': VERSION, ...(options.headers || {})}});
+    });
     if (cookieWrite) {
       authPending.add(operation);
       const settled = () => { authPending.delete(operation); if (!disposed) changed(); };
@@ -135,47 +162,56 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       if (abort) abort.abort();
     }); }
     catch (error) {
-      if (cookieWrite && authUncertain) throw fault('Sign-in or sign-out timed out and may still complete. Wait for it to finish or reload the panel before reconnecting.');
-      if (error?.safe) throw error;
-      throw fault('Network request failed. Saved requests can be resumed without generating again.');
+      const timedOut = safeFaults.get(error)?.code === 'request_timeout';
+      const message = cookieWrite && authUncertain
+        ? 'Sign-in or sign-out timed out and may still complete. Wait for it to finish or reload the panel before reconnecting.'
+        : timedOut ? safe(error) : 'Network request failed. Saved requests can be resumed without generating again.';
+      throw failure(message, stage, timedOut ? 'request_timeout' : 'network_error', null, expectedEpoch);
     }
     if (disposed || expectedEpoch !== epoch || (owner && !same(owner))) throw fault('Connection changed. Reconnect to resume saved requests.');
+    if (!response || typeof response.ok !== 'boolean' || !Number.isInteger(response.status) || response.status < 0 || response.status > 599)
+      throw failure('The company server returned an unexpected response. Check native cookie login.', stage, 'response_invalid', null, expectedEpoch);
     if (!response.ok) {
       if (response.status === 401 && allowUnauthorized) return response;
       const status = Number(response.status);
-      if (status === 401) detach('Sign in again. Native cookie authentication was not confirmed.');
       // Never parse or expose an HTML login page or raw service response.
-      throw fault(status === 401 ? 'Sign in again. Native cookie authentication was not confirmed.' :
-        status === 403 ? 'The company server denied this action.' : 'Company request failed (' + status + ').', status);
+      const error = failure(status === 401 ? 'Sign in again. Native cookie authentication was not confirmed.' :
+        status === 403 ? 'The company server denied this action.' : 'Company request failed (' + status + ').',
+        stage, status === 401 ? 'unauthorized' : status === 403 ? 'forbidden' : 'http_error', status, expectedEpoch);
+      if (status === 401) detach(safe(error), 'signed_out', failureDetails.get(error));
+      throw error;
     }
     return response;
   }
-  async function json(path, options = {}, owner = null, expectedEpoch = epoch, targetOrigin = origin) {
-    const response = await request(path, options, owner, expectedEpoch, targetOrigin);
-    const value = await readBody(response, 'json');
+  async function json(path, options = {}, owner = null, expectedEpoch = epoch, targetOrigin = origin, stage = requestStage(path)) {
+    const response = await request(path, options, owner, expectedEpoch, targetOrigin, stage);
+    const value = await readBody(response, 'json', stage, expectedEpoch);
     if (disposed || expectedEpoch !== epoch || (owner && !same(owner))) throw fault('Connection changed. Reconnect to resume saved requests.');
     return value;
   }
   const body = value => ({method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
-  async function whoami(expectedEpoch = epoch, owner = null) {
-    const result = await json('/auth/whoami', {}, owner, expectedEpoch);
+  async function whoami(expectedEpoch = epoch, owner = null, stage = 'check_session') {
+    const result = await json('/auth/whoami', {}, owner, expectedEpoch, origin, stage);
     if (result?.authenticated !== true || typeof result.username !== 'string' || !result.username) {
-      if (expectedEpoch === epoch) detach('Native cookie login was not confirmed. Check the credentials and UXP cookie support.');
-      throw fault('Native cookie login was not confirmed. Check the credentials and UXP cookie support.');
+      const error = failure('Native cookie login was not confirmed. Check the credentials and UXP cookie support.', stage, 'cookie_not_confirmed', null, expectedEpoch);
+      if (expectedEpoch === epoch) detach(safe(error), 'signed_out', failureDetails.get(error));
+      throw error;
     }
     if (owner && result.username !== owner.account) {
-      detach('The signed-in account changed. Sign in again to resume that account’s requests.');
-      throw fault('The signed-in account changed. Sign in again to resume that account’s requests.');
+      const error = failure('The signed-in account changed. Sign in again to resume that account’s requests.', stage, 'account_mismatch', null, expectedEpoch);
+      detach(safe(error), 'signed_out', failureDetails.get(error)); throw error;
     }
     return result.username;
   }
   async function authenticate(expectedEpoch, expectedUsername) {
-    const username = await whoami(expectedEpoch);
+    const stage = expectedUsername ? 'verify_login' : 'check_session';
+    const username = await whoami(expectedEpoch, null, stage);
     if (expectedEpoch !== epoch) return false;
     if (expectedUsername && username !== expectedUsername) {
-      detach('Login did not establish the requested account. Check credentials and UXP cookie support.'); return false;
+      const error = failure('Login did not establish the requested account. Check credentials and UXP cookie support.', stage, 'account_mismatch', null, expectedEpoch);
+      detach(safe(error), 'signed_out', failureDetails.get(error)); return false;
     }
-    changed({authenticated: true, username, status: 'authenticated', error: null});
+    changed({authenticated: true, username, status: 'authenticated', error: null, diagnostic: null});
     if (helloMessage) await bind(helloMessage);
     if (expectedEpoch === epoch) await refreshWorkspaces();
     return expectedEpoch === epoch && state.authenticated;
@@ -185,7 +221,7 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
   }
   async function connect(value) {
     if (authBlocked()) return false;
-    let next; try { next = validOrigin(value); } catch (error) { changed({error: safe(error)}); return false; }
+    let next; try { next = validOrigin(value); } catch (error) { changed({error: safe(error), diagnostic: null}); return false; }
     const sameOrigin = next === origin;
     detach(null, 'connecting'); origin = next; state.origin = next;
     if (!sameOrigin) helloMessage = null;
@@ -194,7 +230,7 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       await loaded; if (token !== epoch || disposed || authBlocked()) return false;
       if (loadError) { changed({status: 'storage_error', error: 'Saved native request journal could not be read. Preserve it before resetting.'}); return false; }
       try { return await authenticate(token); }
-      catch (error) { if (token === epoch) changed({status: 'login_required', error: safe(error)}); return false; }
+      catch (error) { if (token === epoch) changed({status: 'login_required', ...errorState(error)}); return false; }
     });
   }
   async function login(username, password) {
@@ -209,28 +245,29 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       try {
         // A failed /login can be HTTP 200 while an old cookie remains valid. Prove
         // logout first, so whoami cannot mistake that old session for login success.
-        await request('/logout', {}, null, token, targetOrigin);
-        const probe = await request('/auth/whoami', {allowUnauthorized: true}, null, token, targetOrigin);
+        await request('/logout', {}, null, token, targetOrigin, 'clear_session');
+        const probe = await request('/auth/whoami', {allowUnauthorized: true}, null, token, targetOrigin, 'verify_signout');
         if (probe.status !== 401) {
-          const prior = await readBody(probe, 'json');
-          if (prior?.authenticated !== false) throw fault('Server logout did not clear the native cookie. Close the panel and verify UXP cookie support before signing in.');
+          const prior = await readBody(probe, 'json', 'verify_signout', token);
+          if (prior?.authenticated !== false) throw failure('Server logout did not clear the native cookie. Close the panel and verify UXP cookie support before signing in.',
+            'verify_signout', 'cookie_not_cleared', probe.status, token);
         }
         if (token !== epoch || disposed) return false;
         await request('/login', {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-          body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password) + '&next=%2Fauth%2Fwhoami'}, null, token, targetOrigin);
+          body: 'username=' + encodeURIComponent(username) + '&password=' + encodeURIComponent(password) + '&next=%2Fauth%2Fwhoami'}, null, token, targetOrigin, 'submit_login');
         password = null;
         return await authenticate(token, username);
-      } catch (error) { if (token === epoch) changed({status: 'login_required', error: safe(error)}); return false; }
+      } catch (error) { if (token === epoch) changed({status: 'login_required', ...errorState(error)}); return false; }
       finally { password = null; }
     });
   }
   async function logout() {
-    if (authBlocked()) { detach('Sign-out is waiting on an earlier authentication request.', 'auth_pending'); return false; }
+    if (authBlocked()) { detach('Sign-out is waiting on an earlier authentication request.', 'auth_pending', state.diagnostic); return false; }
     const targetOrigin = origin; detach(null); const token = epoch;
     return queuedAuth(async () => {
       if (!targetOrigin || token !== epoch || disposed || authBlocked()) return false;
-      try { await request('/logout', {}, null, token, targetOrigin); return true; }
-      catch (error) { if (token === epoch) changed({error: 'Local session closed. Server logout was not confirmed; reconnect to verify.'}); return false; }
+      try { await request('/logout', {}, null, token, targetOrigin, 'sign_out'); return true; }
+      catch (error) { if (token === epoch) changed({...errorState(error), error: 'Local session closed. Server logout was not confirmed; reconnect to verify.'}); return false; }
     });
   }
   function itemFor(record, owner) { return {record, owner, buffered: new Set(), ackFlights: new Set(), timer: null, inFlight: false, paused: false, retries: 0, durable: true}; }
@@ -259,10 +296,10 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
         const saved = savedSession(binding, true);
         for (const record of saved.jobs) jobs.set(record.request_id, itemFor(record, binding));
         await persist(); if (token !== epoch) return false;
-        changed({ready: true, session_id: session.session_id, status: 'connected', error: null});
+        changed({ready: true, session_id: session.session_id, status: 'connected', error: null, diagnostic: null});
         host('ready', {version: VERSION, account_id: account}); return true;
       } catch (error) {
-        if (token === epoch) changed({ready: false, status: 'connection_error', error: safe(error)});
+        if (token === epoch) changed({ready: false, status: 'connection_error', ...errorState(error)});
         return false;
       } finally { if (token === epoch) handshake = null; }
     })();
@@ -278,10 +315,12 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
         throw fault('Workspace list is unavailable. Check the company userdata API.');
       const workspaces = object(data.users) ? Object.entries(data.users).filter(([key, value]) => key && typeof value === 'string').map(([key, name]) => ({id: key, name}))
         : [{id: 'default', name: 'Default'}];
-      changed({workspaces, error: null});
+      // Authentication can succeed while the adapter/session bind fails. A
+      // successful catalog read must not erase the still-blocking bind error.
+      changed({workspaces, ...(state.status === 'connection_error' && !state.ready ? {} : {error: null, diagnostic: null})});
       if (state.workspace_id && !workspaces.some(entry => entry.id === state.workspace_id)) await selectWorkspace(null);
       return true;
-    } catch (error) { if (token === epoch && listToken === workspaceListEpoch) changed({error: safe(error)}); return false; }
+    } catch (error) { if (token === epoch && listToken === workspaceListEpoch) changed(errorState(error)); return false; }
   }
   async function selectWorkspace(value) {
     if (value !== null && !state.workspaces.some(workspace => workspace.id === value)) throw fault('Choose an available workspace.');
@@ -349,7 +388,7 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       if (token !== epoch || listToken !== workspaceEpoch || workspace !== state.workspace_id) return false;
       changed({workflows, status: 'connected', error: null}); return true;
     } catch (error) {
-      if (token === epoch && listToken === workspaceEpoch) changed({status: 'workflow_error', error: safe(error)});
+      if (token === epoch && listToken === workspaceEpoch) changed({status: 'workflow_error', ...errorState(error)});
       return false;
     }
   }
@@ -372,7 +411,7 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
       selectedPreparation = {workspace_id: workspace, path, source_hash: data.preparation.source_hash,
         preparation_id: data.preparation.preparation_id};
       changed({parameter_schema: schema, parameters: values, error: null}); return true;
-    } catch (error) { if (token === epoch && workToken === workspaceEpoch && selectToken === selectionEpoch) changed({error: safe(error)}); return false; }
+    } catch (error) { if (token === epoch && workToken === workspaceEpoch && selectToken === selectionEpoch) changed(errorState(error)); return false; }
   }
   function setParameters(values) {
     if (!selectedPreparation || !object(values)) throw fault('Select a prepared workflow before editing parameters.');
@@ -478,7 +517,7 @@ globalThis.createPSNativeTransport = function (hooks = {}) {
           if (record.acknowledged.includes(index) || item.buffered.has(index) || record.ackPending.includes(index)) continue;
           item.retryNeeded = true;
           const response = await request(route(item) + '/results/' + index, {}, item.owner);
-          const data = await readBody(response, 'arrayBuffer'); if (!current(item)) return;
+          const data = await readBody(response, 'arrayBuffer', 'request', item.owner.epoch); if (!current(item)) return;
           if (!data.byteLength || data.byteLength > 24 * 1024 * 1024) throw fault('Result image size is invalid.');
           host('result', {request_id: rid, index, result_count: record.resultCount, image: base64(data)}, item.owner);
         }

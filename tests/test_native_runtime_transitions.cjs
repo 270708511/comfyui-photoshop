@@ -41,7 +41,7 @@ function fixture({holdTeardown = false, holdLocal = false} = {}) {
   const ctx = {
     rt: {value: 'http://127.0.0.1:8188', set(value) { this.value = value; }}, Qe: store => store.value,
     psTeam: () => bridge, Nn() {}, ne: {info() {}, error() {}}, WebSocket: Socket,
-    psConnectionAttempt: 0, psPreviewEpoch: 0, psLegacyPreviewReady: true, psPreviewChain: Promise.resolve(),
+    psNativePanel: null, psConnectionAttempt: 0, psPreviewEpoch: 0, psLegacyPreviewReady: true, psPreviewChain: Promise.resolve(),
     hi: null, It: '', xn: false, Pe: null, Op: 'mock-client', Pa() {}, Aa() {}, Oa() {}, Tp() {},
     setInterval() { return 1; }, clearInterval() {},
     setTimeout(fn) { if (holdTeardown) teardownGate.promise.then(fn); else queueMicrotask(fn); return 1; }
@@ -93,4 +93,16 @@ test('newer local Apply wins while older company Apply waits for socket teardown
   assert.equal(f.sockets.length, 1);
   assert.equal(f.sockets[0].url, 'ws://127.0.0.1:8189/ps/ws?clientId=mock-client&platform=ps');
   assert(!f.events.some(event => event[0] === 'connect'));
+});
+
+test('compiled native sheet callback hides legacy fixed preview only while open',()=>{
+ const source=bundle.slice(bundle.indexOf('if(globalThis.createPSNativePanel&&globalThis.createPSNativeTransport)'));
+ const legacy={style:{display:'flex'}},container={style:{},children:[],appendChild(x){this.children.push(x)},querySelector:()=>legacy};
+ let options,visible;
+ const ctx={document:{querySelector:()=>container,createElement:()=>({style:{}})},psTeam:()=>({getNativeTransport:()=>({}),nativeEnabled:()=>true}),createPSNativeTransport(){},createPSNativePanel(h){options=h;return{mount(){h.onViewChange(true)},show(value){visible=value;if(!value)h.onViewChange(false)}}}};
+ vm.createContext(ctx);vm.runInContext(source,ctx);
+ assert.equal(container.style.position,"relative");assert.equal(visible,true);assert.equal(legacy.style.display,'none');
+ options.onViewChange(false);assert.equal(legacy.style.display,'flex');
+ options.onViewChange(true);assert.equal(legacy.style.display,'none');
+ ctx.psNativePanel.show(false);assert.equal(legacy.style.display,'flex');
 });

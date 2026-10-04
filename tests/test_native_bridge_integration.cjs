@@ -65,3 +65,14 @@ test('new company connection wins over older pending local disconnect',async()=>
 test('new local disconnect wins over older pending company connection',async()=>{
  const f=await fixture();const old=f.bridge.connect('http://other.test');const current=f.bridge.disconnectLocal('http://127.0.0.1:8188');await Promise.all([old,current]);assert.equal(f.bridge.enabled(),false);assert.equal(f.bridge.nativeEnabled(),false);
 });
+
+test('native connection status leaves Connecting after failure and shows only safe diagnostic fields',async()=>{
+ const f=await fixture();
+ f.setState({authenticated:false,ready:false,status:'login_required',error:'password=private https://bad.test/?token=secret',diagnostic:{stage:'check_session',code:'network_error',http_status:null}});
+ assert.deepEqual(f.statuses.at(-1),['Native connection failed [check_session: network_error]','darkred']);
+ f.setState({status:'signing_in',error:null,diagnostic:null});
+ assert.deepEqual(f.statuses.at(-1),['Signing in through native connection','orange']);
+ f.setState({status:'login_required',error:'not signed in',diagnostic:{stage:'check_session',code:'unauthorized',http_status:401}});
+ assert.deepEqual(f.statuses.at(-1),['Sign in through the native panel','orange']);
+ assert(!JSON.stringify(f.statuses).includes('private'));
+});

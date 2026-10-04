@@ -12,6 +12,25 @@ globalThis.createPSTeamBridge = function (hooks) {
   let native = null, nativeMode = false, nativeState = null;
   let appliedTeamMode = null, appliedURL = null;
   let nativeSelectionVersion = 0;
+  let nativeStatusKey = '';
+  function updateNativeStatus(state) {
+    if (!nativeMode) return;
+    const diagnostic = state.diagnostic || {};
+    const stage = ['check_session', 'clear_session', 'verify_signout', 'submit_login', 'verify_login', 'sign_out', 'bind_session', 'list_workspaces', 'request'].includes(diagnostic.stage) ? diagnostic.stage : '';
+    const code = ['network_error', 'request_timeout', 'response_invalid', 'response_timeout', 'unauthorized', 'forbidden', 'http_error', 'cookie_not_cleared', 'cookie_not_confirmed', 'account_mismatch'].includes(diagnostic.code) ? diagnostic.code : '';
+    const status = Number.isInteger(diagnostic.http_status) && diagnostic.http_status >= 100 && diagnostic.http_status <= 599 ? diagnostic.http_status : null;
+    const key = JSON.stringify([state.status, !!state.authenticated, !!state.error, stage, code, status]);
+    if (key === nativeStatusKey) return;
+    nativeStatusKey = key;
+    if (state.status === 'connecting') hooks.status('Checking native session', 'orange');
+    else if (state.status === 'signing_in') hooks.status('Signing in through native connection', 'orange');
+    else if (state.status === 'auth_pending') hooks.status('Earlier sign-in is still pending; wait before retrying', 'orange');
+    else if (code === 'unauthorized' && stage === 'check_session') hooks.status('Sign in through the native panel', 'orange');
+    else if (state.error) diagnosticStatus('Native connection failed' + (stage ? ' [' + stage + (code ? ': ' + code : '') + (status ? ', HTTP ' + status : '') + ']' : '; see Team workspace'), 'darkred');
+    else if (!state.authenticated) hooks.status('Sign in through the native panel', 'orange');
+    else if (state.ready) hooks.status('Connected', 'green');
+    else hooks.status('Signed in; connecting Team session', 'orange');
+  }
   function nativeEnabled(url = appliedURL || hooks.url()) {
     try { return typeof globalThis.createPSNativeTransport === 'function' && parseURL(url).transport === 'company' && enabled(url); } catch { return false; }
   }
@@ -25,6 +44,7 @@ globalThis.createPSTeamBridge = function (hooks) {
           nativeState = state;
           if (state.selectionVersion !== nativeSelectionVersion) nativeSelectionVersion = state.selectionVersion;
           if (nativeMode && !state.authenticated) { ready = false; active = null; }
+          updateNativeStatus(state);
           try { hooks.nativeState?.(state); } catch {}
         }
       });
@@ -268,11 +288,13 @@ globalThis.createPSTeamBridge = function (hooks) {
         appliedTeamMode = true; appliedURL = parsed.url;
         connectionBlocked = false;
         if (nativeMode) {
+          nativeStatusKey = '';
           hooks.status('Connecting native data channel', 'orange');
-          await nativeTransport().connect(next);
+          const connected = await nativeTransport().connect(next);
           if (expected !== connectionAttempt) return false;
+          updateNativeStatus(nativeTransport().getState());
           send('hello', helloState());
-          return true;
+          return connected !== false;
         }
         attachView(document.querySelector('webview'));
         if (!viewLoadFailed) {
