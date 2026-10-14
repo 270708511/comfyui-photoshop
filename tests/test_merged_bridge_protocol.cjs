@@ -152,7 +152,7 @@ function integrated(options = {}) {
       sessionStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
       setTimeout: handler => {timers.set(++timerID, handler); return timerID;}, clearTimeout: id => timers.delete(id),
     });
-    const source = fs.readFileSync(path.join(root, 'js/team.js'), 'utf8')
+    const source = fs.readFileSync(path.join(root, 'js/workflow-prompt.js'), 'utf8').replace(/export /g, '') + '\n' + fs.readFileSync(path.join(root, 'js/team.js'), 'utf8')
       .replace(/^import\s.*?;?\s*$/gm, '').replace(/\bexport\s+/g, '');
     vm.runInContext(source + '\nstartTeam(() => {});', browser, {filename: 'js/team.js'});
   }

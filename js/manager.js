@@ -1,3 +1,4 @@
+import { installUEPromptCompatibility } from "./workflow-prompt.js";
 import { createWorkflowSwitchers } from "./workflow-switchers.js";
 import { app as app } from "../../../scripts/app.js";
 import { api as api } from "../../../scripts/api.js";
@@ -71,7 +72,8 @@ app.registerExtension({
     }
   },
 
-  afterConfigureGraph() { switchers.invalidate(); },
+  setup() { installUEPromptCompatibility(app); },
+  afterConfigureGraph() { installUEPromptCompatibility(app); switchers.invalidate(); },
   nodeCreated(node) {
     if ((node.comfyClass || node.type) !== "Fast Groups Muter (rgthree)") return;
     const original = node.getExtraMenuOptions;

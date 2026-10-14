@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const path = require('node:path');
 const {webcrypto} = require('node:crypto');
 const root = path.resolve(__dirname, '..');
-const source = fs.readFileSync(path.join(root, 'js/team.js'), 'utf8').replace(/^import.*\n/, '').replace(/export /g, '');
+const source = fs.readFileSync(path.join(root, 'js/workflow-prompt.js'), 'utf8').replace(/export /g, '') + '\n' + fs.readFileSync(path.join(root, 'js/team.js'), 'utf8').replace(/^import.*\n/gm, '').replace(/export /g, '');
 const INPUT='🔹Photoshop ComfyUI Plugin', OUTPUT='🔹SendTo Photoshop Plugin';
 function fixture(options={}) {
   const handlers={},messages=[],calls=[],timers=[],posts=[],uploads=[];

@@ -15,7 +15,7 @@ function frontend(fetch, graph = async () => ({output: {node: {}}, workflow: {no
     window: {uxpHost: host, addEventListener: (type, fn) => listeners.push(fn), dispatchEvent() {}},
     fetch, console, URLSearchParams, CustomEvent: class {}, setTimeout: fn => {timers.set(++timerID, fn); return timerID;}, clearTimeout: id => timers.delete(id),
     FileReader: class {readAsDataURL() {this.result = 'data:image/png;base64,IMAGE'; this.onload();}}});
-  let source = fs.readFileSync(path.join(root, 'js/team.js'), 'utf8').replace(/^import .*\n/, '').replace(/export /g, '');
+  let source = fs.readFileSync(path.join(root, 'js/workflow-prompt.js'), 'utf8').replace(/export /g, '') + '\n' + fs.readFileSync(path.join(root, 'js/team.js'), 'utf8').replace(/^import .*\n/gm, '').replace(/export /g, '');
   vm.runInContext(source + '\nthis.start = startTeam;', context); context.start(() => {});
   const emit = async (message, extra = {}) => {
     const event = {source: host, origin: 'comfyui.photoshop.team', data: {protocol: 'ps-team-1', transport: 'company', panel: 'PANEL', session_id: 'SESSION', ...message}, ...extra};

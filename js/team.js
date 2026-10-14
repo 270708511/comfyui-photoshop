@@ -1,3 +1,4 @@
+import { currentWorkflowPrompt } from "./workflow-prompt.js";
 import { app } from '../../../scripts/app.js';
 
 export let teamMode = false;
@@ -69,7 +70,7 @@ async function run(message) {
     teamPreview.mask = 'data:image/jpeg;base64,' + message.payload.maskBase64;
     window.dispatchEvent(new CustomEvent('ps-team-input'));
     stage = 'submit';
-    const graph = await app.graphToPrompt();
+    const graph = await currentWorkflowPrompt(app);
     if (binding !== initial) return;
     const payload = {prompt: graph.output, extra_data: {extra_pnginfo: {workflow: graph.workflow}}};
     host('state', {request_id: rid, state: 'submitting'}, initial);
@@ -339,7 +340,7 @@ async function run(message) {
     await current(initial);
     const mask = await upload(message.payload.maskBase64, 'mask.png', directory, initial);
     await current(initial);
-    const graph = await app.graphToPrompt();
+    const graph = await currentWorkflowPrompt(app);
     await current(initial);
     const outputs = Object.keys(graph.output).filter(k => graph.output[k].class_type === OUTPUT);
     if (!outputs.length || !Object.values(graph.output).some(n => n.class_type === INPUT)) throw new Error('Workflow requires Photoshop input and SendTo nodes');
