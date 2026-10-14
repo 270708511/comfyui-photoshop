@@ -21,7 +21,7 @@ const connector = segment('let It=', ';let Hi=');
 const controller = segment('function Hp(', 'class cn');
 const settings = segment('function xm(', 'class Nm');
 const webPanel = segment('function Um(', 'function jm(');
-const nativeBootstrap = bundle.slice(bundle.indexOf('if(globalThis.createPSNativePanel&&globalThis.createPSNativeTransport)'));
+const nativeBootstrap = bundle.slice(bundle.indexOf('/* Restore only an explicitly'));
 const statusWriter = segment('function Nn(', 'window.addEventListener("beforeunload"');
 
 function fixture({saved, storage, failRead = false, failWrite = false, rejectNetwork = false} = {}) {
@@ -110,7 +110,7 @@ test('cold bootstrap, repeated controller start and Settings/Web panel creation 
 });
 
 for (const [name, url, native, socket] of [
-  ['company', 'https://company.test/team', true, false],
+  ['company', 'https://company.test/team', false, false],
   ['explicit local', 'http://127.0.0.1:8188', false, true],
   ['explicit standalone', 'https://company.test/?ps_transport=standalone', false, false]
 ]) {
@@ -152,7 +152,7 @@ test('Apply snapshots and persists the normalized address before a failing conne
   assert.equal(f.sockets.length, 0); assert.equal(f.timers.size, 0);
   const reloaded = fixture({storage: f.data}); await reloaded.bootstrap();
   assert.equal(reloaded.ctx.rt.value, 'https://company.test/team');
-  assert.deepEqual(networkEvents(reloaded), [['connect', 'https://company.test/team']]);
+  assert.deepEqual(networkEvents(reloaded), [['navigate', 'https://company.test/team'], ['connect', 'https://company.test/team']]);
 });
 
 test('draft edits, opening Settings and reopening controllers do not apply or persist until Apply', async () => {
@@ -164,17 +164,17 @@ test('draft edits, opening Settings and reopening controllers do not apply or pe
   const reloaded = fixture({storage: f.data}); await reloaded.bootstrap(); assert.equal(reloaded.ctx.rt.value, 'https://company.test');
 });
 
-test('native Connect uses the same persistent Apply path; optional editor uses the applied address, never an unapplied draft', async () => {
-  const f = fixture(); await f.bootstrap(); f.ctx.rt.set('HTTPS://Company.Test:443'); await f.ctx.nativeOptions.onConnect();
-  assert.equal(f.data.get(KEY), preference('https://company.test')); assert.equal(f.sockets.length, 0);
-  assert(!f.events.some(event => event[0] === 'navigate'));
-  f.ctx.rt.set('https://unapplied.test'); f.ctx.nativeOptions.onOpenEditor();
-  assert.deepEqual(f.events.filter(event => event[0] === 'navigate'), [['navigate', 'https://company.test']]);
+test('Settings Apply opens WebView using the applied address, not an edited draft', async () => {
+ const f=fixture();await f.bootstrap();f.ctx.rt.set('HTTPS://Company.Test:443');await f.makeController()[7]();
+ assert.equal(f.data.get(KEY),preference('https://company.test'));assert.equal(f.sockets.length,0);
+ f.ctx.rt.set('https://unapplied.test');f.ctx.psOpenConnectionEditor();
+ assert(f.events.filter(event=>event[0]==='navigate').every(event=>event[1]==='https://company.test'));
+ assert.equal(f.ctx.nativeOptions,undefined);
 });
 
 test('Reset explicitly applies and saves one local address without an intermediate 0.0.0.0 navigation or delayed draft read', async () => {
   const f = fixture({saved: preference('https://company.test')}); await f.bootstrap();
-  const reset = f.makeController()[8](); f.ctx.rt.set('https://unapplied.test'); await reset;
+  f.events.length=0; const reset = f.makeController()[8](); f.ctx.rt.set('https://unapplied.test'); await reset;
   assert.equal(f.data.get(KEY), preference('http://127.0.0.1:8188'));
   assert.deepEqual(f.events.filter(event => event[0] === 'navigate'), [['navigate', 'http://127.0.0.1:8188']]);
   assert(f.sockets[0].url.startsWith('ws://127.0.0.1:8188/ps/ws?')); assert.equal(f.timers.size, 0);
@@ -221,7 +221,7 @@ test('Apply before first controller startup is never overwritten by the previous
   const f = fixture({saved: preference('http://127.0.0.1:8188')}); f.ctx.rt.set('https://company.test'); await f.makeController()[7]();
   await f.bootstrap(); await f.makeController()[5]();
   assert.equal(f.events.filter(event => event[0] === 'read').length, 0);
-  assert.deepEqual(networkEvents(f), [['connect', 'https://company.test']]);
+  assert.deepEqual(networkEvents(f), [['navigate', 'https://company.test'], ['connect', 'https://company.test']]);
 });
 
 test('stale close timer and interval cannot overwrite a newer persisted company Apply or a later draft', async () => {

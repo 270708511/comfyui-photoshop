@@ -197,9 +197,11 @@ test('inspect demands replacement consent; save demands separate review and exac
   assert.equal(f.hookCalls(), 0);
   assert.deepEqual(s.counts(), {loadCalls: 1, convertCalls: 1});
 });
-test('existing server PS input/output fixture can be prepared without any browser seed control', async () => {
+test('existing server PS input/output fixture can be prepared without any browser seed control', async t => {
   const m = moduleUnderTest(), f = fixtures({seed: false}), s = serverFixture(f);
-  const serverTests = fs.readFileSync(path.join(__dirname, '../../comfyui-server/tests/test_ps_team_api.py'), 'utf8');
+  const candidate=process.env.PS_SERVER_TEST_ROOT ? path.join(process.env.PS_SERVER_TEST_ROOT,'tests/test_ps_team_api.py') : path.join(__dirname,'../../comfyui-server/tests/test_ps_team_api.py');
+  if(!fs.existsSync(candidate)){t.skip('Set PS_SERVER_TEST_ROOT to the paired server checkout');return;}
+  const serverTests = fs.readFileSync(candidate, 'utf8');
   assert.ok(serverTests.includes(IN) && serverTests.includes(OUT));
   const client = m.createPreparationClient({application: s.application, fetcher: s.fetcher});
   const draft = await client.inspect('team_a', 'workflows/demo.json', {replaceConfirmed: true});

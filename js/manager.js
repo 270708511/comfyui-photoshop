@@ -1,29 +1,19 @@
+import { createWorkflowSwitchers } from "./workflow-switchers.js";
 import { app as app } from "../../../scripts/app.js";
 import { api as api } from "../../../scripts/api.js";
 import { sendMsg, addListener } from "./connection.js";
 import { photoshopNode } from "./nodestyle.js";
 
 export const nodever = "1.9.3";
-let workflowSwitcher = "";
-let rndrModeSwitcher = "";
-
-addListener("photoshopConnected", () => {
-  console.log("🔹photoshopConnected");
-  try {
-    if (workflowSwitcher) sendMsg("Send_workflow", SwitcherWidgetNames(workflowSwitcher));
-    if (rndrModeSwitcher) sendMsg("Send_rndrMode", SwitcherWidgetNames(rndrModeSwitcher));
-  } catch (error) {
-    console.error("🔹 Error in photoshopConnected listener:", error);
-  }
+const switchers = createWorkflowSwitchers({
+  graph: () => app.graph,
+  send: sendMsg,
+  redraw: () => app.graph?.setDirtyCanvas(true, true),
 });
-
-addListener("workflow", (data) => {
-  try {
-    workflowSwitcher.widgets[data].callback();
-  } catch (error) {
-    console.error("🔹 Error in workflow listener:", error);
-  }
-});
+addListener("photoshopConnected", () => switchers.refresh(true));
+addListener("workflow", id => switchers.toggle("workflow", id));
+addListener("rndrMode", id => switchers.toggle("rndrMode", id));
+setInterval(() => switchers.refresh(), 500);
 
 addListener("alert", (data) => {
   try {
@@ -40,32 +30,6 @@ addListener("queue", async () => {
   catch (error) { sendMsg("alert", "Workflow submit failed: " + error); }
   finally { isProcessing = false; }
 });
-
-addListener("rndrMode", (data) => {
-  try {
-    rndrModeSwitcher.widgets[data].callback();
-  } catch (error) {
-    console.error("🔹 Error in rndrMode listener:", error);
-  }
-});
-
-const SwitcherWidgetNames = (switcher) => {
-  try {
-    let widgetNames = [];
-    let widgets = switcher.widgets;
-    widgets.forEach((widget) => {
-      const label = String(widget.label || widget.name || "").replace(/^Enable /, "");
-      const selected =
-        widget.value && typeof widget.value === "object" && "toggled" in widget.value
-          ? Boolean(widget.value.toggled)
-          : Boolean(widget.value);
-      widgetNames.push(selected ? { name: label, selected: true } : { name: label });
-    });
-    return widgetNames;
-  } catch (error) {
-    console.error("🔹 Error in SwitcherWidgetNames:", error);
-  }
-};
 
 // Register extension with ComfyUI
 app.registerExtension({
@@ -100,38 +64,22 @@ app.registerExtension({
     }
   },
 
-  async nodeCreated(node) {
-    try {
-      if (!workflowSwitcher) {
-        if (
-          node.comfyClass == "Fast Groups Muter (rgthree)" &&
-          ((await node.color) == "#2b4557" ||
-            (await node.bgcolor) == "#2b4557" ||
-            (await node?.title?.startsWith("📁")))
-        ) {
-          workflowSwitcher = node;
-          console.log("🔹 workflowSwitcher detected: ", workflowSwitcher);
-          workflowswitcherchecker();
-          return;
-        }
+  afterConfigureGraph() { switchers.invalidate(); },
+  nodeCreated(node) {
+    if ((node.comfyClass || node.type) !== "Fast Groups Muter (rgthree)") return;
+    const original = node.getExtraMenuOptions;
+    node.getExtraMenuOptions = function(canvas, options) {
+      const result = original?.call(this, canvas, options);
+      for (const [role, title] of [["workflow", "工作流模式"], ["rndrMode", "渲染风格"], ["none", "不作为 Photoshop 开关"], [null, "自动识别"]]) {
+        options.push({content: "Photoshop：" + title, callback: () => {
+          this.properties ||= {};
+          if (role === null) delete this.properties.psSwitcherRole;
+          else this.properties.psSwitcherRole = role;
+          switchers.invalidate(); app.graph?.setDirtyCanvas(true, true);
+        }});
       }
-
-      if (!rndrModeSwitcher) {
-        if (
-          node.comfyClass == "Fast Groups Muter (rgthree)" &&
-          ((await node.color) == "#4e5e4e" ||
-            (await node.bgcolor) == "#4e5e4e" ||
-            (await node?.title?.startsWith("⚙️")))
-        ) {
-          rndrModeSwitcher = node;
-          console.log("🔹 rndrModeSwitcher detected: ", rndrModeSwitcher);
-          rndrswitcherchecker();
-          return;
-        }
-      }
-    } catch (error) {
-      console.error("🔹 Error in nodeCreated:", error);
-    }
+      return result;
+    };
   },
 });
 
@@ -214,38 +162,4 @@ export function appendMenuOption(nodeType, callbackFn) {
     callbackFn.apply(this, arguments);
     return options;
   };
-}
-
-function workflowswitcherchecker() {
-  let previousWorkflowWidgets = JSON.stringify(workflowSwitcher?.widgets);
-
-  setInterval(() => {
-    try {
-      const currentWorkflowWidgets = JSON.stringify(workflowSwitcher?.widgets);
-      if (currentWorkflowWidgets !== previousWorkflowWidgets) {
-        console.log("Workflow switcher widgets have changed");
-        sendMsg("Send_workflow", SwitcherWidgetNames(workflowSwitcher));
-        previousWorkflowWidgets = currentWorkflowWidgets;
-      }
-    } catch (error) {
-      console.error("🔹 Error in workflow switcher widget change detection:", error);
-    }
-  }, 3000);
-}
-
-function rndrswitcherchecker() {
-  let previousRndrModeWidgets = JSON.stringify(rndrModeSwitcher?.widgets);
-
-  setInterval(() => {
-    try {
-      const currentRndrModeWidgets = JSON.stringify(rndrModeSwitcher?.widgets);
-      if (currentRndrModeWidgets !== previousRndrModeWidgets) {
-        console.log("Render mode switcher widgets have changed");
-        sendMsg("Send_rndrMode", SwitcherWidgetNames(rndrModeSwitcher));
-        previousRndrModeWidgets = currentRndrModeWidgets;
-      }
-    } catch (error) {
-      console.error("🔹 Error in render mode switcher widget change detection:", error);
-    }
-  }, 3000);
 }

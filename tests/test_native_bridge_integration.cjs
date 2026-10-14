@@ -7,7 +7,7 @@ async function fixture(){
  const view={addEventListener:(n,cb)=>viewEvents[n]=cb,postMessage:()=>{throw Error('native must not post to WebView')}};
  const ctx={setInterval(){},window:{addEventListener:(n,cb)=>events[n]=cb},document:{querySelector:()=>null},createPSNativeTransport:h=>{creations++;hooks=h;peer={connect:async()=>h.onState(state),receive:async m=>{sent.push(m);if(m.type==='hello')h.emit({...m,type:'ready',session_id:'s',account_id:'a'});},dispose(){},disconnect(){state={...state,authenticated:false,canGenerate:false};h.onState(state);},getState:()=>state};return peer;}};
  vm.createContext(ctx);vm.runInContext(source,ctx);
- const bridge=ctx.createPSTeamBridge({url:()=>url,status:(...a)=>statuses.push(a),control(){},document:()=>doc,canvas:async()=> 'canvas',mask:async()=> 'mask',bounds:()=>null,setBounds(){},activate:async id=>doc={id},preview:async s=>previews.push(s),save:async s=>saved.push(s)});
+ const bridge=ctx.createPSTeamBridge({nativeTransportEnabled:true,url:()=>url,status:(...a)=>statuses.push(a),control(){},document:()=>doc,canvas:async()=> 'canvas',mask:async()=> 'mask',bounds:()=>null,setBounds(){},activate:async id=>doc={id},preview:async s=>previews.push(s),save:async s=>saved.push(s)});
  await bridge.connect('http://company.test');await tick();await tick();
  function emit(m){const hello=sent.find(m=>m.type==='hello');hooks.emit({...hello,session_id:'s',...m});}
  return{bridge,sent,statuses,previews,saved,view,events,emit,setState:s=>{state={...state,...s};hooks.onState(state)},hooks:()=>hooks,setURL:value=>{url=value},creations:()=>creations};
@@ -53,10 +53,10 @@ test('applied local switch detaches company state and does not send new native r
 });
 test('compiled transition funnels native Connect through socket teardown and guards preview provenance',()=>{
  const bundle=fs.readFileSync(path.join(root,'assets/index-B_-tWO9a.js'),'utf8');
- assert(bundle.includes('onConnect:()=>psApplyConnection(Qe(rt))'));assert(bundle.includes('await psTeam().disconnectLocal(i);if(transition!==psConnectionAttempt)return false;await Ta();'));
+ assert(bundle.includes('return psConnectionStartupPromise=psConnectSelected(url,openEditor)'));assert(bundle.includes('await psTeam().disconnectLocal(i);if(transition!==psConnectionAttempt)return false;await Ta();'));
  assert(bundle.includes('if(psTeam().enabled()||i.target&&i.target!==Pe)return'));
  assert(bundle.includes('!psTeam().enabled()&&!psLegacyPreviewReady'));
- assert(!bundle.includes('O(P, "src", "http://127.0.0.1:8188")'));assert(bundle.includes('onOpenEditor:()=>psOpenConnectionEditor()'));
+ assert(!bundle.includes('O(P, "src", "http://127.0.0.1:8188")'));assert(!bundle.includes('psNativePanel.mount(nativeRoot)'));
 });
 
 test('new company connection wins over older pending local disconnect',async()=>{

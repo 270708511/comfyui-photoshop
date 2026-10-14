@@ -136,7 +136,7 @@ test('close retry retains the applied local URL and logs its actual socket origi
 });
 
 for (const [mode, url, native] of [
-  ['native company', 'https://company.test', true],
+  ['WebView company', 'https://company.test', false],
   ['explicit standalone', 'https://company.test/?ps_transport=standalone', false],
   ['new local', 'http://127.0.0.1:8190', false]
 ]) {

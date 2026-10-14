@@ -200,3 +200,29 @@ Official references:
 - https://developer.adobe.com/photoshop/uxp/ps_reference/changelog/
 - https://developer.adobe.com/photoshop/uxp/2022/uxp-api/reference-js/global-members/html-elements/html-web-view-element
 - https://developer.adobe.com/uxp/guides/how-to/debugging/
+
+### HTTPS WebView runtime (2026-10-14)
+
+The shipped `dist/manifest.json` uses the company HTTPS WebView and its existing
+authenticated Team bridge. Apply the server address in Settings and sign in in
+ComfyUI Web. Settings becomes green only after the authenticated Team session
+binds; a loaded page alone is insufficient. The plugin Web panel toolbar and the
+native Team workspace sheet are removed. ComfyUI's own page controls stay intact.
+
+Preset controls follow Fast Groups Muter (rgthree) nodes in the current graph.
+Blue `#2b4557` / `📁` identifies workflow modes; green `#4e5e4e` / `⚙️` identifies
+render styles. Use each node's Photoshop menu to set an explicit role when colours
+are ambiguous. Missing nodes and conflicting roles are shown explicitly. Modern
+rgthree widgets use `doModeChange()` so the node retains its own selection rules.
+Switching/reloading graphs invalidates old control identities.
+
+Existing native request journals are preserved. A Settings warning asks users to
+use the previous native build to review/finish unfinished native requests. Native
+transport files remain archival recovery components and are not loaded by `index.html`.
+Do not delete journals or migrate uncertain insertion records automatically.
+
+Deploy `js/manager.js` and `js/workflow-switchers.js` together from the published
+plugin commit; use the server's existing service-management script if restart is
+needed. Load this checkout's `dist/manifest.json` in UXP Developer Tools and reload
+the plugin. Verify HTTPS login, both Preset lists, workflow switching, toggles,
+canvas/mask capture and image insertion in the actual Photoshop host.

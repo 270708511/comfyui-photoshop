@@ -11,6 +11,9 @@ globalThis.createPSTeamBridge = function (hooks) {
   const watchedViews = new WeakSet();
   let native = null, nativeMode = false, nativeState = null;
   let appliedTeamMode = null, appliedURL = null;
+  function clearPresetControls(label = '未连接') {
+    hooks.control?.({Send_workflow: [{id: '', name: label, disabled: true}], Send_rndrMode: [{id: '', name: label, disabled: true}]});
+  }
   let nativeSelectionVersion = 0;
   let nativeStatusKey = '';
   function updateNativeStatus(state) {
@@ -32,7 +35,7 @@ globalThis.createPSTeamBridge = function (hooks) {
     else hooks.status('Signed in; connecting Team session', 'orange');
   }
   function nativeEnabled(url = appliedURL || hooks.url()) {
-    try { return typeof globalThis.createPSNativeTransport === 'function' && parseURL(url).transport === 'company' && enabled(url); } catch { return false; }
+    try { return hooks.nativeTransportEnabled === true && typeof globalThis.createPSNativeTransport === 'function' && parseURL(url).transport === 'company' && enabled(url); } catch { return false; }
   }
   function nativeTransport() {
     if (!native && typeof globalThis.createPSNativeTransport === 'function') {
@@ -224,12 +227,12 @@ globalThis.createPSTeamBridge = function (hooks) {
     watchedViews.add(current);
     current.addEventListener('loadstart', () => {
       if (nativeMode || hooks.optionalEditor?.() || view !== current) return;
-      ready = false; epoch++; active = null; viewLoadFailed = false;
+      ready = false; clearPresetControls('连接中'); epoch++; active = null; viewLoadFailed = false;
       if (enabled()) hooks.status('Loading Web panel', 'orange');
     });
     current.addEventListener('loaderror', event => {
       if (nativeMode || hooks.optionalEditor?.() || view !== current || !enabled()) return;
-      ready = false; epoch++; active = null; viewLoadFailed = true;
+      ready = false; clearPresetControls('连接失败'); epoch++; active = null; viewLoadFailed = true;
       const code = typeof event.code === 'number' && Number.isFinite(event.code) ? ' (' + event.code + ')' : '';
       const message = event.code === -1022
         ? 'Web panel blocked (-1022): macOS ATS requires valid HTTPS'
@@ -260,7 +263,7 @@ globalThis.createPSTeamBridge = function (hooks) {
   }
   async function connect(url) {
     if (busy || insertion) { hooks.status('Finish canvas export or insertion before switching connection', 'orange'); return false; }
-    ready = false; active = null; epoch++; connectionBlocked = true;
+    ready = false; clearPresetControls('连接中'); active = null; epoch++; connectionBlocked = true;
     const expected = ++connectionAttempt;
     viewLoadFailed = false;
     try {
@@ -355,7 +358,7 @@ globalThis.createPSTeamBridge = function (hooks) {
           }
           if (!busy) await selectNext();
         });
-      } else if (m.type === 'unbound') { ready = false; epoch++; active = null; hooks.status('Sign in again', 'orange'); }
+      } else if (m.type === 'unbound') { ready = false; clearPresetControls(); epoch++; active = null; hooks.status('Sign in again', 'orange'); }
       else if (m.type === 'control') {
         if (m.payload && Object.keys(m.payload).every(k => ['Send_workflow', 'Send_rndrMode', 'alert'].includes(k))) hooks.control(m.payload);
       } else if (m.type === 'state' && jobs.has(m.request_id)) {
@@ -592,5 +595,5 @@ globalThis.createPSTeamBridge = function (hooks) {
     if (busy || !ready || !jobs.has(rid)) throw new Error('Request cannot be cancelled now');
     send('cancel', {request_id: rid});
   }
-  return {enabled, canSwitch:()=>!busy&&!insertion&&!preparingInsert, nativeEnabled, getNativeTransport: nativeTransport, disconnectLocal, normalizeURL: url => parseURL(url, true).url, watchView: attachView, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
+  return {enabled, canSwitch:()=>!busy&&!insertion&&!preparingInsert, nativeEnabled, getNativeTransport: nativeTransport, readArchivedNative: () => hooks.readArchivedNative?.(), disconnectLocal, normalizeURL: url => parseURL(url, true).url, watchView: attachView, connect, capture, control, beforeInsert, afterInsert, resolveInsertion, rebindDocument, cancel};
 };
