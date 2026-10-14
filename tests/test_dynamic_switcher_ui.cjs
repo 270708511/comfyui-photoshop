@@ -13,19 +13,19 @@ test('dynamic groups include any colour, skip empty and reject reloaded graph ta
 });
 
 function ui() {
- class Element {constructor(){this.children=[];this.textContent='';}appendChild(el){this.children=this.children.filter(child=>child!==el);this.children.push(el);el.parent=this;}remove(){this.parent.children=this.parent.children.filter(child=>child!==this);}}
+ class Element {constructor(){this.children=[];this.textContent='';}get firstChild(){return this.children[0]||null;}appendChild(el){el.remove();this.children.push(el);el.parent=this;}insertBefore(el,anchor){el.remove();const index=this.children.indexOf(anchor);this.children.splice(index<0?this.children.length:index,0,el);el.parent=this;}remove(){if(this.parent){this.parent.children=this.parent.children.filter(child=>child!==this);this.parent=null;}}}
  const timers=new Map();let counter=0;const widgets=[],sent=[],confirmed=[];
  const ctx=vm.createContext({document:{createElement:()=>new Element()},setTimeout:fn=>{timers.set(++counter,fn);return counter;},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(fs.readFileSync(root+'/ComfyUI Photoshop Team/dist/ps-workflow-controls.js','utf8'),ctx);
  const controls=ctx.PSWorkflowControls,container=new Element();
  controls.mount(container,payload=>sent.push(payload),()=>confirmed.push(true),(host,prefix,items,change)=>{
-  const widget={prefix,items,change,destroyed:false,update(rows){this.items=rows;},destroy(){this.destroyed=true;}};widgets.push(widget);return widget;
+  const header=new Element();host.appendChild(header);const widget={host,header,prefix,items,change,destroyed:false,update(rows){this.items=rows;},destroy(){this.destroyed=true;header.remove();}};widgets.push(widget);return widget;
  });
  return {controls,container,widgets,sent,confirmed,timers};
 }
 test('dynamic groups use original dropdown adapter with folder and gear icons, no added node titles',()=>{
  const f=ui(),groups=[1,2,3].map(id=>({id:'g'+id,name:'禁用多框 #'+id,items:[{id:'a'+id,name:'A',selected:true},{id:'b'+id,name:'B',selected:false}]}));
- f.controls.update({groups});assert.equal(f.widgets.length,3);assert.equal(f.widgets[0].prefix,'📂');assert.equal(f.widgets[1].prefix,'⚙️');assert.equal(f.container.children[0].textContent,'');
+ f.controls.update({groups});assert.equal(f.widgets.length,3);assert.equal(f.widgets[0].prefix,'📂');assert.equal(f.widgets[1].prefix,'⚙️');assert.equal(f.container.children.length,3);assert.ok(f.widgets.every(widget=>widget.host===f.container && widget.header.parent===f.container));
  f.widgets[0].change('b1');assert.equal(f.sent.length,1);assert.equal(f.widgets[0].items[0].selected,true);assert.equal(f.confirmed.length,0);
  f.controls.result({request_id:'wrong',applied:true});assert.equal(f.confirmed.length,0);
  groups[0].items[0].selected=false;groups[0].items[1].selected=true;f.controls.update({groups});f.controls.result({request_id:f.sent[0].request_id,applied:true});assert.equal(f.confirmed.length,1);

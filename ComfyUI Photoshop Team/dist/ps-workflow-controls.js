@@ -13,34 +13,36 @@
       const controls = new Map();
       let pending = null, timer = null;
       const status = document.createElement('div');
-      container.appendChild(status);
+      function showStatus(text) {
+        status.textContent = text;
+        if (text) container.insertBefore(status, container.firstChild);
+        else status.remove();
+      }
       function draw(response) {
         if (response && pending && response.request_id === pending.request_id) {
           clearTimeout(timer); pending = null;
-          status.textContent = response.applied ? '' : '切换未生效，请重试';
+          showStatus(response.applied ? '' : '切换未生效，请重试');
           if (response.applied) confirmed();
         }
         const ids = new Set(state.groups.map(group => group.id));
         if (pending && !ids.has(pending.group_id)) { clearTimeout(timer); pending = null; }
-        for (const [id, entry] of controls) if (!ids.has(id)) { entry.widget.destroy(); entry.host.remove(); controls.delete(id); }
-        if (!state.groups.length) status.textContent = state.status || '当前工作流未配置模式开关';
-        else if (!response && !pending) status.textContent = '';
+        for (const [id, entry] of controls) if (!ids.has(id)) { entry.widget.destroy(); controls.delete(id); }
+        if (!state.groups.length) showStatus(state.status || '当前工作流未配置模式开关');
+        else if (!response && !pending) showStatus('');
         state.groups.forEach((group, index) => {
           let entry = controls.get(group.id);
           if (!entry) {
-            const host = document.createElement('div'); container.appendChild(host);
-            const widget = makeDropdown(host, index === 1 ? '⚙️' : '📂', group.items, id => {
+            const widget = makeDropdown(container, index === 1 ? '⚙️' : '📂', group.items, id => {
               if (pending || !state.groups.some(current => current.id === group.id && current.items.some(item => item.id === id))) return;
               pending = {group_id: group.id, widget_id: id, request_id: 'switch-' + Date.now() + '-' + (++serial)};
-              status.textContent = '';
-              timer = setTimeout(() => { pending = null; status.textContent = '未收到工作流切换确认，请检查连接'; }, 8000);
+              showStatus('');
+              timer = setTimeout(() => { pending = null; showStatus('未收到工作流切换确认，请检查连接'); }, 8000);
               try { send(pending); }
-              catch { clearTimeout(timer); pending = null; status.textContent = '发送切换请求失败'; }
+              catch { clearTimeout(timer); pending = null; showStatus('发送切换请求失败'); }
             });
-            entry = {host, widget}; controls.set(group.id, entry);
+            entry = {widget}; controls.set(group.id, entry);
           }
           entry.widget.update(group.items);
-          container.appendChild(entry.host);
         });
       }
       listeners.add(draw); draw();

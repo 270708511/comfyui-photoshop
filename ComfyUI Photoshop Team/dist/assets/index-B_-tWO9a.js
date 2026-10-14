@@ -44,7 +44,7 @@ let psAppliedConnectionURL=null, psConnectionStartupDone=false, psConnectionStar
 let psConnectionStorageWarning="";
 // Durable package marker, not a commit SHA. Diagnostics never initialize a bridge
 // or transport, and show only the selected origin and mode, never a URL path/query.
-const psConnectionUIBuild="connection-ui-20261014.4";
+const psConnectionUIBuild="connection-ui-20261014.5";
 let psLastConnectionDiagnosticURL;
 function psConnectionDiagnostic(url=psAppliedConnectionURL){
  const result={build:psConnectionUIBuild,origin:"none",mode:"unselected"};
