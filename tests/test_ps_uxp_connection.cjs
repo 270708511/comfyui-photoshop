@@ -31,7 +31,7 @@ function fixture(options = {}) {
   vm.runInContext(code, context);
   const bridge = context.createPSTeamBridge({url: () => url, status: (...value) => statuses.push(value),
     diagnostic: message => diagnostics.push(message),
-    load: options.load, save: options.save, preview: options.preview || (async () => {}), document: () => ({id: 1}), control() {}});
+    canvas: options.canvas, mask: options.mask, bounds: options.bounds, load: options.load, save: options.save, preview: options.preview || (async () => {}), document: () => ({id: 1}), control() {}});
   const receive = async (overrides = {}) => {
     const sent = messages.at(-1);
     await events.message({source: current, origin: sent?.origin, ...overrides,
@@ -351,4 +351,36 @@ test('trusted malformed JSON is ignored and cannot paint a false connection',asy
   const f=fixture();await f.bridge.connect('https://comfyui.example.test');
   await f.events.message({source:f.view,origin:'https://comfyui.example.test/',data:'{not-json'});
   assert(!f.statuses.some(([text])=>text==='Connected'));
+});
+
+test('historical generation failure is archived without painting a live connection red',async()=>{
+ let saved;const f=fixture({load:async()=>pendingJournal(),save:async value=>saved=value});
+ await f.bridge.connect(f.view.src);await f.receive();
+ await f.receive({data:{type:'state',request_id:'request',state:'error'}});
+ await f.receive({data:{type:'error',request_id:'request',stage:'generation',error:'Generation failed'}});
+ assert.equal(f.statuses.at(-1)[1],'green');
+ const context=saved.connections['http://comfyui.example.test'].sessions.session.jobs[0][1];
+ assert.equal(context.terminalError,true);assert.equal(context.failure.message,'Generation failed');
+ await f.receive();assert.equal(f.messages.filter(m=>m.data.type==='resume').at(-1).data.requests.length,0);
+ const restarted=fixture({load:async()=>saved});await restarted.bridge.connect(restarted.view.src);await restarted.receive();
+ assert.equal(restarted.messages.filter(m=>m.data.type==='resume').at(-1).data.requests.length,0);
+ assert.equal(restarted.statuses.at(-1)[1],'green');
+});
+test('archiving never drops pending insertion review or unknown request diagnostics into current status',async()=>{
+ const journal=pendingJournal();const context=journal.connections['http://comfyui.example.test'].sessions.session.jobs[0][1];
+ context.terminalError=true;context.resultCount=1;context.uncertain=[0];
+ const f=fixture({load:async()=>journal});await f.bridge.connect(f.view.src);await f.receive();
+ assert.equal(f.messages.filter(m=>m.data.type==='resume').at(-1).data.requests[0],'request');
+ const before=f.statuses.length;await f.receive({data:{type:'error',request_id:'unowned',stage:'generation',error:'Old failed job'}});
+ assert.equal(f.statuses.length,before);
+});
+
+test('a newly generated request still shows its real failure and preserves the journal',async()=>{
+ let saved;const f=fixture({canvas:async()=> 'canvas',mask:async()=> 'mask',bounds:()=>null,save:async value=>saved=value});
+ await f.bridge.connect(f.view.src);await f.receive();await f.bridge.capture(async()=>({}));
+ const rid=f.messages.find(m=>m.data.type==='generate').data.request_id;
+ await f.receive({data:{type:'state',request_id:rid,state:'error'}});
+ await f.receive({data:{type:'error',request_id:rid,stage:'generation',error:'Current validation failed'}});
+ assert.deepEqual(f.statuses.at(-1),['generation: Current validation failed','darkred']);
+ assert.equal(saved.connections['http://comfyui.example.test'].sessions.session.jobs[0][1].failure.message,'Current validation failed');
 });

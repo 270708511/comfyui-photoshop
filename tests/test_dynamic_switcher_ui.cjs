@@ -24,17 +24,26 @@ function ui() {
 test('shipped dynamic UI waits for confirmed state; renders three groups and no empty placeholder',()=>{
  const f=ui(); const groups=[1,2,3].map(id=>({id:'g'+id,name:'组'+id,items:[{id:'a'+id,name:'A',selected:true},{id:'b'+id,name:'B',selected:false}]}));
  f.controls.update({groups});assert.equal(f.container.children.length,3);
- f.container.children[0].children[0].events.click();f.container.children[0].children[2].events.click();
- assert.match(f.container.children[0].children[0].textContent,/✓ A/);assert.equal(f.sent.length,1);assert.equal(f.confirms.length,0);
+ f.container.children[0].children[1].events.click();f.container.children[0].children[3].events.click();
+ assert.match(f.container.children[0].children[1].textContent,/✓ A/);assert.equal(f.sent.length,1);assert.equal(f.confirms.length,0);
  f.controls.result({request_id:'wrong',applied:true});assert.equal(f.confirms.length,0);
  groups[0].items[0].selected=false;groups[0].items[1].selected=true;f.controls.update({groups});
- f.controls.result({request_id:f.sent[0].request_id,applied:true});assert.equal(f.confirms.length,1);assert.match(f.container.children[0].children[0].textContent,/✓ B/);
+ f.controls.result({request_id:f.sent[0].request_id,applied:true});assert.equal(f.confirms.length,1);assert.match(f.container.children[0].children[1].textContent,/✓ B/);
  f.controls.update({groups:[],status:'未连接'});assert.equal(f.container.children.length,1);assert.equal(f.container.children[0].textContent,'未连接');
 });
 test('rejection and timeout never optimistically select another item',()=>{
  const f=ui();f.controls.update({groups:[{id:'g',name:'组',items:[{id:'a',name:'A',selected:true},{id:'b',name:'B',selected:false}]}]});
- f.container.children[0].children[0].events.click();f.container.children[0].children[2].events.click();
- f.controls.result({request_id:f.sent[0].request_id,applied:false});assert.match(f.container.children[0].children[0].textContent,/✓ A/);assert.match(f.container.children[1].textContent,/未生效/);
- f.container.children[0].children[2].events.click();for(const callback of f.timers.values())callback();
+ f.container.children[0].children[1].events.click();f.container.children[0].children[3].events.click();
+ f.controls.result({request_id:f.sent[0].request_id,applied:false});assert.match(f.container.children[0].children[1].textContent,/✓ A/);assert.match(f.container.children[1].textContent,/未生效/);
+ f.container.children[0].children[3].events.click();for(const callback of f.timers.values())callback();
  assert.match(f.container.children[1].textContent,/未收到/);assert.equal(f.confirms.length,0);
+});
+
+test('Preset stays open when host emits mouseleave',()=>{
+ const bundle=fs.readFileSync(root+'/ComfyUI Photoshop Team/dist/assets/index-B_-tWO9a.js','utf8');
+ const start=bundle.indexOf('function Yg('),end=bundle.indexOf('class Jg',start);let opened=true;const events={};
+ const panel={addEventListener:(type,fn)=>events[type]=fn};
+ const ctx=vm.createContext({Y:()=>{},Yn:{set(value){opened=value;}},yt:fn=>fn(),kn:()=>{},Q:[],document:{querySelector:()=>panel}});
+ vm.runInContext(bundle.slice(start,end),ctx);ctx.Yg({}, {}, ()=>{});
+ events.mouseleave?.();assert.equal(opened,true);
 });

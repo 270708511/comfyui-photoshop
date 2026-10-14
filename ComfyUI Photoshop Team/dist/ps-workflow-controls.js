@@ -26,19 +26,23 @@
         }
         if (!state.groups.length && pending) { clearTimeout(timer); pending = null; }
         container.textContent = '';
-        container.style.cssText = 'padding:12px;display:flex;flex-direction:column;';
+        container.style.cssText = 'padding:8px;display:flex;flex-direction:column;max-height:360px;overflow-y:auto;';
         if (!state.groups.length) container.appendChild(element('div', state.status || '当前工作流未配置模式开关'));
         for (const group of state.groups) {
-          const box = element('div'); box.style.cssText = 'margin-bottom:12px;';
+          const box = element('div'); box.style.cssText = 'margin:0 0 8px;flex-shrink:0;';
           const names = group.items.filter(item => item.selected).map(item => item.name);
-          const button = element('button', group.name + '：' + (names.length ? '✓ ' + names.join('、') : '未启用') + ' ▾');
-          button.style.cssText = 'width:100%;padding:16px;text-align:left;background:#262626;color:#ddd;border-radius:16px;white-space:normal;';
+          const title = element('div', group.name);
+          title.style.cssText = 'font-size:12px;line-height:18px;color:#999;margin:0 0 4px;';
+          box.appendChild(title);
+          const summary = names.length ? '✓ ' + names[0] + (names.length > 1 ? ' 等' + names.length + '项' : '') : '未启用';
+          const button = element('button', summary + ' ▾');
+          button.style.cssText = 'display:block;width:100%;height:auto;min-height:32px;max-height:none;margin:0;padding:8px 12px;font-size:14px;font-weight:normal;line-height:18px;text-align:left;background:#262626;color:#ddd;border-radius:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
           button.disabled = !!pending;
           button.addEventListener('click', () => { open = open === group.id ? null : group.id; draw(); });
           box.appendChild(button);
           if (open === group.id) for (const item of group.items) {
             const option = element('button', (item.selected ? '✓ ' : '○ ') + item.name);
-            option.style.cssText = 'width:100%;padding:12px;text-align:left;background:#333;color:#ddd;';
+            option.style.cssText = 'display:block;width:100%;height:auto;min-height:32px;max-height:none;margin:2px 0 0;padding:8px 12px;font-size:14px;font-weight:normal;line-height:18px;text-align:left;background:#333;color:#ddd;white-space:normal;';
             option.disabled = !!pending || item.disabled || typeof item.id !== 'string';
             option.addEventListener('click', () => {
               if (pending) return;

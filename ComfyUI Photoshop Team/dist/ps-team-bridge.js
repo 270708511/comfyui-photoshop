@@ -154,7 +154,7 @@ globalThis.createPSTeamBridge = function (hooks) {
   }
   function stateFor(context) {
     return {documentID: context.documentID, documentName: context.documentName, sourceDocumentID: context.sourceDocumentID, bounds: context.bounds, maskBase64: context.maskBase64, resultCount: context.resultCount,
-      inserted: [...context.inserted], uncertain: [...context.uncertain]};
+      inserted: [...context.inserted], uncertain: [...context.uncertain], terminalError: !!context.terminalError, failure: context.failure || null};
   }
   function persist() {
     const next = saveChain.then(async () => {
@@ -169,6 +169,9 @@ globalThis.createPSTeamBridge = function (hooks) {
     });
     saveChain = next.catch(() => {});
     return next;
+  }
+  function recoverable(context) {
+    return !context.terminalError || context.resultCount !== null || context.inserted.size > 0 || context.uncertain.size > 0 || context.results.size > 0;
   }
   function restore(saved) {
     return new Map((saved?.jobs || []).map(([rid, context]) => [rid, {...context,
@@ -367,8 +370,10 @@ globalThis.createPSTeamBridge = function (hooks) {
           reportTarget = readyOwner;
           await persist();
           if (!same(readyOwner) || connectionBlocked || viewLoadFailed) return;
-          ready = true; hooks.status('Connected', 'green');
-          send('resume', {requests: [...jobs.keys()]});
+          ready = true;
+          const archived = [...jobs.values()].filter(context => !recoverable(context)).length;
+          hooks.status(archived ? 'Connected · ' + archived + ' 条历史失败记录已保留' : 'Connected', 'green');
+          send('resume', {requests: [...jobs].filter(([, context]) => recoverable(context)).map(([rid]) => rid)});
           for (const [rid, context] of jobs) {
             for (const index of context.inserted) send('ack', {request_id: rid, index});
             for (const index of context.results.keys()) send('received', {request_id: rid, index});
@@ -389,7 +394,16 @@ globalThis.createPSTeamBridge = function (hooks) {
           if (context.resultCount !== null && context.resultCount !== m.result_count) throw new Error('Result count changed unexpectedly');
           context.resultCount = m.result_count;
         }
-        hooks.status(m.state, 'yellow');
+        if (m.state === 'error') {
+          await serial(async () => {
+            if (!same(target)) return;
+            context.terminalError = true;
+            context.failure = context.failure || {stage: 'generation', message: 'Generation failed'};
+            await persist();
+            if (!same(target) || connectionBlocked || viewLoadFailed) return;
+            hooks.status(context.needsDocumentReview ? 'Connected · 历史失败记录已保留' : 'Generation failed', context.needsDocumentReview ? 'green' : 'darkred');
+          });
+        } else hooks.status(m.state, 'yellow');
         if (m.state === 'cancelled') await serial(async () => {
           if (!same(target)) return;
           jobs.delete(m.request_id); if (active?.rid === m.request_id) active = null;
@@ -397,7 +411,20 @@ globalThis.createPSTeamBridge = function (hooks) {
           if (!same(target) || connectionBlocked || viewLoadFailed) return;
           if (!busy) await selectNext();
         });
-      } else if (m.type === 'error') { hooks.status((m.stage || 'Session') + ': ' + m.error, 'darkred'); }
+      } else if (m.type === 'error') {
+        const context = jobs.get(m.request_id);
+        if (m.request_id && !context) return;
+        if (context?.terminalError) {
+          await serial(async () => {
+            if (!same(target)) return;
+            context.failure = {stage: m.stage || 'generation', message: safeMessage(m.error)};
+            await persist();
+          });
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
+          if (context.needsDocumentReview) return;
+        }
+        hooks.status((m.stage || 'Session') + ': ' + safeMessage(m.error), 'darkred');
+      }
       else if (m.type === 'acknowledged' && jobs.has(m.request_id)) {
         await serial(async () => {
           if (!same(target)) return;
