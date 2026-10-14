@@ -78,10 +78,28 @@ export function createWorkflowSwitchers({ graph, send, redraw = () => {} }) {
     const target = targets.get(role + ':' + id);
     if (!target || graph() !== currentGraph || !currentGraph?._nodes?.includes(target.node)
         || !target.node.widgets?.includes(target.widget)) { refresh(true); return false; }
-    // New rgthree widgets own group recomputation and mutual-exclusion rules.
-    if (typeof target.widget.doModeChange === 'function') target.widget.doModeChange();
-    else target.widget.callback.call(target.widget, !selected(target.widget));
-    redraw(); refresh(true); return true;
+    // Preset dropdowns select one branch, even when the graph's muter allows many.
+    // Call rgthree's methods so underlying node modes change, not just row values.
+    const controls = () => (target.node.widgets || []).filter(widget =>
+      typeof widget.doModeChange === 'function' || typeof widget.callback === 'function');
+    const identity = (widget, index) => widget.groupKey || widget.name || String(index);
+    const resolve = key => controls().find((widget, index) => identity(widget, index) === key);
+    const apply = (widget, value) => {
+      if (typeof widget.doModeChange === 'function') widget.doModeChange(value, true);
+      else widget.callback.call(widget, value);
+    };
+    for (const key of controls().map(identity).filter(key => key !== target.identity)) {
+      const widget = resolve(key);
+      if (!widget) { refresh(true); return false; }
+      apply(widget, false);
+    }
+    const chosen = resolve(target.identity);
+    if (!chosen) { refresh(true); return false; }
+    apply(chosen, true);
+    redraw(); refresh(true);
+    const live = controls();
+    const chosenAfter = resolve(target.identity);
+    return !!chosenAfter && live.filter(selected).length === 1 && selected(chosenAfter);
   }
   return {refresh, invalidate, toggle};
 }

@@ -13,8 +13,8 @@ function fixture() {
 }
 function node(id, color, names = ['A','B']) {
   const n = {id, comfyClass:'Fast Groups Muter (rgthree)', color, properties:{}, widgets:[]};
-  n.widgets = names.map((name,index)=>({name:'Enable '+name,groupKey:name,value:{toggled:index===0},doModeChange(){
-    const next=!this.value.toggled;
+  n.widgets = names.map((name,index)=>({name:'Enable '+name,groupKey:name,value:{toggled:index===0},doModeChange(force){
+    const next=force === undefined ? !this.value.toggled : force;
     if(n.properties.exclusive&&next)n.widgets.forEach(w=>w.value.toggled=false);
     this.value.toggled=next;
   }}));
@@ -27,7 +27,7 @@ test('both screenshot roles publish labels and independent checked states; use a
   assert.equal(f.controller.toggle('workflow',rows[1].id),true);assert.equal(a.widgets[1].value.toggled,true);
   assert.equal(f.sent.get('Send_workflow')[1].selected,true);
 });
-test('node exclusivity is enforced by the node, not duplicated in plugin',()=>{
+test('single selection updates underlying muter state',()=>{
   const f=fixture(),a=node(1,'#2b4557');a.properties.exclusive=true;f.graph._nodes=[a];f.controller.refresh();
   f.controller.toggle('workflow',f.sent.get('Send_workflow')[1].id);
   assert.equal(a.widgets[0].value.toggled,false);assert.equal(a.widgets[1].value.toggled,true);
@@ -47,7 +47,7 @@ test('ambiguous colours report conflict and explicit role takes precedence',()=>
   const f=fixture(),a=node(1,'#2b4557'),b=node(2,'#2b4557');f.graph._nodes=[a,b];f.controller.refresh();
   assert.equal(f.sent.get('Send_workflow')[0].disabled,true);assert.match(f.sent.get('Send_workflow')[0].name,/多个/);
   b.properties.psSwitcherRole='workflow';f.controller.invalidate();const rows=f.sent.get('Send_workflow');
-  assert.equal(rows[0].disabled,undefined);f.controller.toggle('workflow',rows[0].id);assert.equal(b.widgets[0].value.toggled,false);assert.equal(a.widgets[0].value.toggled,true);
+  assert.equal(rows[0].disabled,undefined);f.controller.toggle('workflow',rows[0].id);assert.equal(b.widgets[0].value.toggled,true);assert.equal(a.widgets[0].value.toggled,true);
 });
 test('reconnect sends unchanged lists and legacy callback receives boolean toggle',()=>{
   const f=fixture(),a=node(1,'#2b4557');let next;a.widgets=[{name:'Enable old',value:false,callback(value){next=value;this.value=value;}}];
@@ -69,4 +69,24 @@ test('shipped Preset dropdown reads live option.selected, including no selected 
   values[11]({querySelectorAll:()=>options});queue.forEach(fn=>fn());mounted();
   assert.equal(values[2],'two');assert.match(values[0],/second/);
   options=[];observed();assert.equal(values[2],null);assert.match(values[0],/未配置/);
+});
+
+test('single selection clears all initially enabled branches and repeat selection stays enabled',()=>{
+ const f=fixture(),a=node(1290,'#2b4557',['图生图','文生图','TILE']),b=node(1292,'#353',['风格1','风格2']);
+ a.widgets.forEach(widget=>widget.value.toggled=true);f.graph._nodes=[a,b];f.controller.refresh();
+ const group=f.sent.get('Send_switcherGroups').groups[0],id=group.items[1].id;
+ assert.equal(f.controller.toggle(group.id,id),true);
+ assert.deepEqual(a.widgets.map(widget=>widget.value.toggled),[false,true,false]);
+ assert.equal(b.widgets[0].value.toggled,true);assert.equal(f.controller.toggle(group.id,id),true);
+ assert.deepEqual(a.widgets.map(widget=>widget.value.toggled),[false,true,false]);
+});
+test('single selection survives rgthree replacing widgets during a mode change',()=>{
+ const f=fixture(),a=node(1,'#2b4557',['A','B','C']);
+ function make(name,value){return {name:'Enable '+name,groupKey:name,value:{toggled:value},doModeChange(force,skip){
+  assert.equal(skip,true);const current=a.widgets.find(widget=>widget.groupKey===name);current.value.toggled=force;
+  a.widgets=a.widgets.map(widget=>make(widget.groupKey,widget.value.toggled));
+ }}}
+ a.widgets=['A','B','C'].map(name=>make(name,true));f.graph._nodes=[a];f.controller.refresh();
+ const group=f.sent.get('Send_switcherGroups').groups[0];assert.equal(f.controller.toggle(group.id,group.items[1].id),true);
+ assert.deepEqual(a.widgets.map(widget=>widget.value.toggled),[false,true,false]);
 });
