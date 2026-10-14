@@ -25,6 +25,7 @@ function httpFixture(options = {}) {
     calls.push({url, method, body: args.body});
     if (held.has(url)) {const gate = held.get(url); held.delete(url); gate.started(); return gate.promise;}
     if (url === options.failNetworkAt) throw new TypeError('Network unavailable');
+    if (url === '/ps/team/latest') return response(options.retention || {detail: 'Older adapter'}, options.retention ? 200 : 404);
     if (url === '/auth/whoami') return response({authenticated: true, username});
     if (url === '/ps/team/capabilities') return response({protocol: 'ps-team-1', transport: 'company', durable: true}, options.capabilityStatus ?? (options.standalone ? 404 : 200));
     if (url === '/ps/team/sessions' || /^\/ps\/team\/sessions\/[^/]+$/.test(url)) {

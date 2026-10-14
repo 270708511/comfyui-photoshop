@@ -14,7 +14,7 @@ from server import PromptServer
 # ComfyUI installs /api aliases for these routes, so both spellings are covered.
 def _team_reserved_path(value):
     parts = re.split(r"[\\/]", str(value))
-    return any(part.rstrip(" .").casefold().startswith(("ps_team", "ps_tea~")) for part in parts)
+    return any(part.rstrip(" .").casefold().startswith(("ps_team", "ps_tea~", "ps_live", "ps_liv~")) for part in parts)
 
 
 @web.middleware

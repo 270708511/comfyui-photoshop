@@ -366,6 +366,20 @@ globalThis.createPSTeamBridge = function (hooks) {
             jobs = restore(journal.connections[connectionKey]?.sessions?.[m.session_id]); active = null; epoch++;
           }
           session = m.session_id; account = m.account_id || null;
+          if (Array.isArray(m.resumable_requests)) {
+            const retained = new Set(m.resumable_requests);
+            for (const ref of m.resumable_refs || []) {
+              if (!jobs.has(ref.request_id)) {
+                const old = restore(journal.connections[connectionKey]?.sessions?.[ref.session_id]);
+                if (old.has(ref.request_id)) jobs.set(ref.request_id, old.get(ref.request_id));
+              }
+            }
+            for (const rid of jobs.keys()) if (!retained.has(rid)) {
+              jobs.delete(rid); if (active?.rid === rid && !busy) active = null;
+            }
+            const sessions = journal.connections[connectionKey]?.sessions || {};
+            for (const [sid, saved] of Object.entries(sessions)) if (sid !== session) saved.jobs = [];
+          }
           const readyOwner = owner();
           reportTarget = readyOwner;
           await persist();
@@ -409,6 +423,16 @@ globalThis.createPSTeamBridge = function (hooks) {
           jobs.delete(m.request_id); if (active?.rid === m.request_id) active = null;
           await persist();
           if (!same(target) || connectionBlocked || viewLoadFailed) return;
+          if (!busy) await selectNext();
+        });
+      } else if (m.type === 'retired' && jobs.has(m.request_id)) {
+        await serial(async () => {
+          if (!same(target)) return;
+          jobs.delete(m.request_id);
+          if (active?.rid === m.request_id && !busy) active = null;
+          await persist();
+          if (!same(target) || connectionBlocked || viewLoadFailed) return;
+          if (ready) hooks.status('Connected', 'green');
           if (!busy) await selectNext();
         });
       } else if (m.type === 'error') {

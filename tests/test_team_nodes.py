@@ -78,6 +78,18 @@ class TeamNodesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, message or ''):
             team_snapshot(meta)
 
+    def test_trusted_live_outputs_persist_without_snapshot_or_legacy_socket(self):
+        import asyncio
+        node = Output()
+        meta = {'ps_live': {'version': 'ps-live-1', 'owner': 'alice', 'directory_id': 'b'*32}}
+        value = asyncio.run(node.execute('batch', extra_pnginfo=meta))
+        self.assertEqual(node.type, 'output')
+        self.assertEqual(node.prefix_append, '')
+        self.assertEqual(value['ui']['images'][0]['subfolder'], 'ps_live/'+'b'*32)
+        self.assertEqual(value['result'], ('batch',))
+        with self.assertRaises(ValueError):
+            asyncio.run(node.execute('batch', extra_pnginfo={'ps_live': dict(meta['ps_live'], directory_id='../outside')}))
+
     def test_invalid_or_missing_snapshot_forces_execution_not_cached_reuse(self):
         for meta in (None, {}, [], '', False, 1, {'ps_team': None}, {'ps_team': {}},
                      {'ps_team': {'version': 'ps-team-1', 'snapshot_id': 'b' * 32}},

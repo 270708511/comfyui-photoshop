@@ -326,8 +326,20 @@ class ComfyUIToPhotoshop(SaveImage):
         prompt=None,
         extra_pnginfo=None,
     ):
-        snapshot = team_snapshot(extra_pnginfo)
-        if snapshot:
+        live = (extra_pnginfo or {}).get("ps_live")
+        if live is not None and (not isinstance(live, dict) or live.get("version") != "ps-live-1"
+                or not isinstance(live.get("owner"), str) or not live["owner"]
+                or not re.fullmatch(r"[a-f0-9]{32}", str(live.get("directory_id", "")))):
+            raise ValueError("Invalid trusted PS live output scope")
+        # Snapshot validation remains mandatory on the input node. Text-only
+        # WebView prompts can have a muted input node and a trusted output scope.
+        snapshot = team_snapshot(extra_pnginfo) if not live else None
+        if live:
+            self.output_dir = folder_paths.get_output_directory()
+            self.type = "output"
+            self.prefix_append = ""
+            filename_prefix = "ps_live/" + live["directory_id"] + "/PS_OUTPUTS"
+        elif snapshot:
             self.output_dir = folder_paths.get_output_directory()
             self.type = "output"
             filename_prefix = snapshot["protocol"] + "/" + snapshot["id"] + "/PS_OUTPUTS"
@@ -335,7 +347,7 @@ class ComfyUIToPhotoshop(SaveImage):
             self.output_dir = folder_paths.get_temp_directory()
             self.type = "temp"
         x = self.save_images(output, filename_prefix, prompt, extra_pnginfo)
-        if not snapshot:
+        if not snapshot and not live:
             await self.connect_to_backend(x["ui"]["images"][0]["filename"])
         return {"ui": x["ui"], "result": (output,)}
 

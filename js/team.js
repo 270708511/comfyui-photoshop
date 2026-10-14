@@ -52,7 +52,7 @@ async function call(path, method = 'GET', body, owner = binding) {
   return response.json();
 }
 function route(owner, rid) {
-  return `sessions/${encodeURIComponent(owner.session)}/requests/${encodeURIComponent(rid)}`;
+  return `sessions/${encodeURIComponent(owner.requestSessions?.[rid] || owner.session)}/requests/${encodeURIComponent(rid)}`;
 }
 function validID(value) { return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value); }
 async function run(message) {
@@ -152,7 +152,8 @@ async function poll(rid) {
     if ([401, 403, 404, 410].includes(error.status)) forget(rid, item);
     if ([401, 403].includes(error.status) && item.binding === binding) {
       host('unbound', {error: String(error)}, item.binding); detach(item.binding);
-    } else host('error', {request_id: rid, stage: 'result', error: String(error)}, item.binding);
+    } else if ((error.status === 410 || (item.recovering && error.status === 404))) host('retired', {request_id: rid}, item.binding);
+    else host('error', {request_id: rid, stage: 'result', error: String(error)}, item.binding);
   } finally {
     item.inFlight = false;
     if (current(rid, item)) {
@@ -188,7 +189,14 @@ async function hello(m, origin) {
       binding = {panel: m.panel, session: session.session_id, origin};
     }
     teamMode = true; window.dispatchEvent(new CustomEvent('ps-plugin-bound'));
-    host('ready', {version: VERSION}); receiveControl({photoshopConnected: true});
+    let retention;
+    try { retention = await call('latest', 'GET', undefined, binding); }
+    catch (error) { if (error.status !== 404) throw error; } // Compatibility with an older adapter only.
+    if (token !== handshakeVersion) return;
+    const references = retention ? [...(retention.active_requests || []), ...(retention.latest?.request_id ? [retention.latest] : [])] : undefined;
+    const retained = references?.map(ref => ref.request_id);
+    if (references) binding.requestSessions = Object.fromEntries(references.map(ref => [ref.request_id, ref.session_id]));
+    host('ready', {version: VERSION, ...(retained ? {resumable_requests: retained, resumable_refs: references, latest: retention.latest} : {})}); receiveControl({photoshopConnected: true});
   } catch (error) {
     if (token === handshakeVersion && binding && [401, 403].includes(error.status)) {
       host('unbound', {error: String(error)}); detach(binding);
@@ -218,15 +226,21 @@ export function startTeam(handler) {
         for (const rid of m.requests.filter(validID)) {
           let item = pending.get(rid);
           if (!item || item.binding !== binding) { item = pendingRequest(binding); pending.set(rid, item); }
-          item.retryAttempts = 0; poll(rid);
+          item.recovering = true; item.retryAttempts = 0; poll(rid);
         }
       } else if (['ack', 'received'].includes(m.type) && validID(m.request_id) && Number.isInteger(m.index) && m.index >= 0) {
         let item = pending.get(m.request_id);
-        if (!item && m.type === 'ack') { item = pendingRequest(binding); pending.set(m.request_id, item); }
+        if (!item && m.type === 'ack') { item = pendingRequest(binding); item.recovering = true; pending.set(m.request_id, item); }
         if (!item || item.binding !== binding || (item.resultCount !== null && m.index >= item.resultCount)) return;
         item.retryAttempts = 0;
         if (m.type === 'received') item.buffered.add(m.index);
-        else { try { await acknowledge(m.request_id, item, m.index); } finally { poll(m.request_id); } }
+        else {
+          try { await acknowledge(m.request_id, item, m.index); }
+          catch (error) {
+            if ((error.status === 410 || (item.recovering && error.status === 404))) { forget(m.request_id, item); host('retired', {request_id: m.request_id}, item.binding); }
+            else throw error;
+          } finally { poll(m.request_id); }
+        }
       } else if (m.type === 'cancel' && validID(m.request_id)) {
         await call(route(initial, m.request_id), 'DELETE', undefined, initial);
         if (binding !== initial) return;

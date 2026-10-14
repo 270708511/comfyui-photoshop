@@ -90,7 +90,7 @@ test('frontend re-login tries only owned archived sessions before creating anoth
   const calls = [];
   const e = frontend(async url => {calls.push(url); return url.endsWith('/B') ? response({detail: 'other owner'}, 403) : response({session_id: 'A'});});
   await e.emit({type: 'hello', session_id: 'B', session_ids: ['B', 'A']});
-  assert.deepEqual(calls, ['/ps/team/sessions/B', '/ps/team/sessions/A']);
+  assert.deepEqual(calls, ['/ps/team/sessions/B', '/ps/team/sessions/A', '/ps/team/latest']);
   assert.equal(e.messages.at(-1).session_id, 'A');
 });
 test('frontend confirmed cancellation stops delivery and duplicate initialization adds no handler', async () => {
@@ -240,4 +240,20 @@ test('new binding can upload while abandoned old graph serialization is still pe
   assert.equal(s.calls.filter(c => c.url.endsWith('/submit')).length, 1);
   assert.ok(s.calls.some(c => c.url === '/ps/team/sessions/NEWSESSION/requests/NEWREQUEST/submit'));
   gate.resolve({output: {}, workflow: {}}); await old;
+});
+
+test('restored retired requests stop silently while live 404 remains an error', async () => {
+  const s = server(), original = s.fetch;
+  s.fetch = async (url, args) => /requests\/STALE$/.test(url) ? response({detail: 'Request retired'}, 410) : original(url, args);
+  const e = frontend(s.fetch); await e.emit({type: 'hello'});
+  await e.emit({type: 'resume', request_id: undefined, requests: ['STALE']}); await settle();
+  assert.ok(e.messages.some(m => m.type === 'retired' && m.request_id === 'STALE'));
+  assert.equal(e.messages.filter(m => m.type === 'error' && m.request_id === 'STALE').length, 0);
+});
+test('ready retention list prunes obsolete journal without painting the connection red', async () => {
+  const p = panelHarness(); await p.connect(); const rid = await p.capture();
+  await p.emit({type: 'ready', resumable_requests: [], resumable_refs: []});
+  assert.equal(p.storage.value.connections['https://team.example'].sessions.A.jobs.length, 0);
+  assert.deepEqual(p.statuses.at(-1), ['Connected', 'green']);
+  assert.equal(p.messages.filter(m => m.type === 'resume').at(-1).requests.length, 0);
 });
