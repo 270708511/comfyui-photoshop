@@ -12,7 +12,7 @@ globalThis.createPSTeamBridge = function (hooks) {
   let native = null, nativeMode = false, nativeState = null;
   let appliedTeamMode = null, appliedURL = null;
   function clearPresetControls(label = '未连接') {
-    hooks.control?.({Send_workflow: [{id: '', name: label, disabled: true}], Send_rndrMode: [{id: '', name: label, disabled: true}]});
+    hooks.control?.({Send_switcherGroups: {groups: [], status: label}, Send_workflow: [{id: '', name: label, disabled: true}], Send_rndrMode: [{id: '', name: label, disabled: true}]});
   }
   let nativeSelectionVersion = 0;
   let nativeStatusKey = '';
@@ -301,7 +301,7 @@ globalThis.createPSTeamBridge = function (hooks) {
         }
         attachView(document.querySelector('webview'));
         if (!viewLoadFailed) {
-          hooks.status('Open Web panel and sign in', 'orange');
+          hooks.status(view ? 'Waiting for Team handshake' : 'Open Web panel and sign in', 'orange');
           // A WebView can exist before its messaging channel is usable. Keep a
           // valid initialized connection retryable on loadstop/the interval.
           if (view) {
@@ -324,9 +324,27 @@ globalThis.createPSTeamBridge = function (hooks) {
     attachView(document.querySelector('webview'));
     if (view && origin && !ready && !connectionBlocked && !viewLoadFailed) { try { send('hello', helloState()); } catch {} }
   }, 3000);
+  let rejectedMessageKind = '';
   window.addEventListener('message', event => {
-    if (nativeMode || hooks.optionalEditor?.() || !view || event.source !== view || event.origin !== origin) return;
-    return receiveMessage(event.data, false);
+    if (nativeMode || hooks.optionalEditor?.() || !view || !origin) return;
+    let message = event.data;
+    if (typeof message === 'string') {
+      try { message = JSON.parse(message); } catch { return; }
+    }
+    if (!message || message.protocol !== protocol) return;
+    let messageOrigin;
+    try { messageOrigin = parseURL(event.origin).origin; } catch { messageOrigin = null; }
+    const rejection = event.source !== view ? 'unexpected WebView source'
+      : messageOrigin !== origin ? 'unexpected WebView origin' : '';
+    if (rejection) {
+      if (rejectedMessageKind !== rejection) {
+        rejectedMessageKind = rejection;
+        try { hooks.diagnostic?.('Team response ignored: ' + rejection); } catch {}
+      }
+      return;
+    }
+    rejectedMessageKind = '';
+    return receiveMessage(message, false);
   });
   async function receiveMessage(m, nativeMessage = false) {
     if (nativeMessage !== nativeMode || connectionBlocked || (!nativeMode && viewLoadFailed) || !m || m.protocol !== protocol || m.panel !== panel || m.transport !== transport) return;
@@ -360,7 +378,7 @@ globalThis.createPSTeamBridge = function (hooks) {
         });
       } else if (m.type === 'unbound') { ready = false; clearPresetControls(); epoch++; active = null; hooks.status('Sign in again', 'orange'); }
       else if (m.type === 'control') {
-        if (m.payload && Object.keys(m.payload).every(k => ['Send_workflow', 'Send_rndrMode', 'alert'].includes(k))) hooks.control(m.payload);
+        if (m.payload && Object.keys(m.payload).every(k => ['Send_workflow', 'Send_rndrMode', 'Send_switcherGroups', 'Send_switcherResult', 'alert'].includes(k))) hooks.control(m.payload);
       } else if (m.type === 'state' && jobs.has(m.request_id)) {
         const context = jobs.get(m.request_id);
         if (m.document_id != null && String(m.document_id) !== String(context.sourceDocumentID)) {

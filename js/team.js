@@ -197,7 +197,7 @@ async function hello(m, origin) {
 }
 export function teamSend(type, data) {
   if (standalone) { standalone.send(type, data); return; }
-  if (['Send_workflow', 'Send_rndrMode', 'alert'].includes(type)) host('control', {payload: {[type]: data}});
+  if (['Send_workflow', 'Send_rndrMode', 'Send_switcherGroups', 'Send_switcherResult', 'alert'].includes(type)) host('control', {payload: {[type]: data}});
 }
 export function startTeam(handler) {
   receiveControl = handler;
@@ -231,7 +231,7 @@ export function startTeam(handler) {
         if (binding !== initial) return;
         const item = pending.get(m.request_id); if (item) forget(m.request_id, item);
         host('state', {request_id: m.request_id, state: 'cancelled'}, initial);
-      } else if (m.type === 'control' && m.payload && Object.keys(m.payload).every(k => ['workflow', 'rndrMode'].includes(k))) receiveControl(m.payload);
+      } else if (m.type === 'control' && m.payload && Object.keys(m.payload).every(k => ['workflow', 'rndrMode', 'switcher'].includes(k))) receiveControl(m.payload);
       else if (m.type === 'unbind') {
         ++handshakeVersion; handshake = null;
         await call('sessions/' + encodeURIComponent(initial.session), 'DELETE', undefined, initial);
@@ -474,7 +474,7 @@ async function poll(rid) {
   }
 }
 function teamSend(type, data) {
-  if (['Send_workflow', 'Send_rndrMode', 'alert'].includes(type)) host('control', {payload: {[type]: data}});
+  if (['Send_workflow', 'Send_rndrMode', 'Send_switcherGroups', 'Send_switcherResult', 'alert'].includes(type)) host('control', {payload: {[type]: data}});
 }
 // This is an explicit deployment choice, never an error-recovery fallback.
 async function assertNoCompanyAdapter() {
@@ -555,7 +555,7 @@ function startTeam(handler) {
           // Confirm only after the local mapping write succeeds.
           host('acknowledged', {request_id: m.request_id, index: m.index}, record.binding);
         }
-      } else if (m.type === 'control' && m.payload && Object.keys(m.payload).every(k => ['workflow', 'rndrMode'].includes(k))) receiveControl(m.payload);
+      } else if (m.type === 'control' && m.payload && Object.keys(m.payload).every(k => ['workflow', 'rndrMode', 'switcher'].includes(k))) receiveControl(m.payload);
       else if (m.type === 'cancel') host('error', {request_id: m.request_id, stage: 'cancel', error: 'Standalone transport cannot safely cancel a shared server job; use the server task history.'});
       else if (m.type === 'unbind') { ++handshakeVersion; clearBinding(); }
     } catch (error) {

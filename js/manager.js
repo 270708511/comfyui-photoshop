@@ -13,6 +13,13 @@ const switchers = createWorkflowSwitchers({
 addListener("photoshopConnected", () => switchers.refresh(true));
 addListener("workflow", id => switchers.toggle("workflow", id));
 addListener("rndrMode", id => switchers.toggle("rndrMode", id));
+addListener("switcher", data => {
+  if (!data || typeof data.group_id !== "string" || typeof data.widget_id !== "string" || typeof data.request_id !== "string") return;
+  let applied = false;
+  try { applied = switchers.toggle(data.group_id, data.widget_id); }
+  catch { switchers.refresh(true); }
+  sendMsg("Send_switcherResult", {request_id: data.request_id, applied});
+});
 setInterval(() => switchers.refresh(), 500);
 
 addListener("alert", (data) => {

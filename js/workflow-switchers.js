@@ -19,6 +19,25 @@ export function createWorkflowSwitchers({ graph, send, redraw = () => {} }) {
       revision++; currentGraph = live; nodes = candidates;
     }
     const nextTargets = new Map();
+    const groups = [];
+    for (const node of candidates) {
+      if (node.properties?.psSwitcherRole === 'none') continue;
+      const groupId = JSON.stringify([revision, node.id]);
+      const items = (node.widgets || []).filter(widget =>
+        typeof widget.doModeChange === 'function' || typeof widget.callback === 'function')
+        .map((widget, index) => {
+          const identity = widget.groupKey || widget.name || String(index);
+          const id = JSON.stringify([revision, node.id, identity, index]);
+          nextTargets.set(groupId + ':' + id, {node, widget, identity});
+          return {id, name: String(widget.label || widget.name || '').replace(/^Enable\s+/, ''), selected: selected(widget)};
+        });
+      if (items.length) groups.push({id: groupId, name: String(node.title || '开关组') + ' #' + node.id, items});
+    }
+    const groupSignature = JSON.stringify(groups);
+    if (force || last.get('groups') !== groupSignature) {
+      send('Send_switcherGroups', {groups, status: groups.length ? '' : '当前工作流未配置模式开关'});
+      last.set('groups', groupSignature);
+    }
     for (const role of roles) {
       let entries;
       try {

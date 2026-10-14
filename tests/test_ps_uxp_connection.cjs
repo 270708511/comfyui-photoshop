@@ -37,7 +37,7 @@ function fixture(options = {}) {
     await events.message({source: current, origin: sent?.origin, ...overrides,
       data: {protocol: 'ps-team-1', panel: sent?.data.panel, session_id: 'session', transport: sent?.data.transport, type: 'ready', ...overrides.data}});
   };
-  return {bridge, statuses, messages, timers, diagnostics, makeView, receive,
+  return {bridge, statuses, messages, timers, diagnostics, makeView, receive, events,
     get view() { return current; }, setView(value) { current = value; }, setURL(value) { url = value; }};
 }
 
@@ -327,4 +327,28 @@ test('ATS -1022 explains secure endpoint requirement without changing the config
   assert.match(f.diagnostics.at(-1), /\(-1022\).*macOS ATS requires valid HTTPS/);
   assert.equal(f.view.src, 'http://comfyui.example.test');
   assert.equal(f.messages.at(-1).origin, 'http://comfyui.example.test');
+});
+
+test('UXP page URL origins and JSON-string responses complete the authenticated handshake', async()=>{
+  const f=fixture();await f.bridge.connect('https://comfyui.example.test');
+  const hello=f.messages.at(-1).data;
+  await f.events.message({source:f.view,origin:'https://comfyui.example.test/',data:JSON.stringify({...hello,type:'ready',session_id:'owned'})});
+  assert.deepEqual(f.statuses.at(-1),['Connected','green']);
+});
+test('origin normalization does not relax source, domain, panel or protocol ownership',async()=>{
+  for(const change of [
+    {source:{}}, {origin:'https://evil.test/'}, {origin:'https://user:password@comfyui.example.test/'},
+    {origin:'https://comfyui.example.test:444/'}, {panel:'wrong'}, {protocol:'wrong'},
+  ]){
+    const f=fixture();await f.bridge.connect('https://comfyui.example.test');const hello=f.messages.at(-1).data;
+    const {source=f.view,origin='https://comfyui.example.test/',...fields}=change;
+    await f.events.message({source,origin,data:JSON.stringify({...hello,type:'ready',session_id:'owned',...fields})});
+    assert(!f.statuses.some(([text])=>text==='Connected'));
+    assert(!f.diagnostics.join('').includes('password'));
+  }
+});
+test('trusted malformed JSON is ignored and cannot paint a false connection',async()=>{
+  const f=fixture();await f.bridge.connect('https://comfyui.example.test');
+  await f.events.message({source:f.view,origin:'https://comfyui.example.test/',data:'{not-json'});
+  assert(!f.statuses.some(([text])=>text==='Connected'));
 });
