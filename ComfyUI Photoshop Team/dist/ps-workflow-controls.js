@@ -2,64 +2,49 @@
   'use strict';
   let state = {groups: [], status: '连接中'}, serial = 0;
   const listeners = new Set();
-  function publish() { for (const listener of listeners) listener(); }
   root.PSWorkflowControls = {
     update(data) {
       if (!data || !Array.isArray(data.groups)) return;
       state = {groups: data.groups.filter(group => typeof group.id === 'string' && Array.isArray(group.items) && group.items.length), status: String(data.status || '')};
-      publish();
+      for (const listener of listeners) listener();
     },
     result(data) { for (const listener of listeners) listener(data); },
-    mount(container, send, confirmed = () => {}) {
-      let pending = null, timer = null, open = null, error = '';
-      const element = (tag, text) => {
-        const el = document.createElement(tag);
-        if (text !== undefined) el.textContent = text;
-        return el;
-      };
+    mount(container, send, confirmed, makeDropdown) {
+      const controls = new Map();
+      let pending = null, timer = null;
+      const status = document.createElement('div');
+      container.appendChild(status);
       function draw(response) {
         if (response && pending && response.request_id === pending.request_id) {
-          const applied = response.applied === true;
           clearTimeout(timer); pending = null;
-          error = applied ? '' : '切换未生效，请重试';
-          if (applied) confirmed();
+          status.textContent = response.applied ? '' : '切换未生效，请重试';
+          if (response.applied) confirmed();
         }
-        if (!state.groups.length && pending) { clearTimeout(timer); pending = null; }
-        container.textContent = '';
-        container.style.cssText = 'padding:8px;display:flex;flex-direction:column;max-height:360px;overflow-y:auto;';
-        if (!state.groups.length) container.appendChild(element('div', state.status || '当前工作流未配置模式开关'));
-        for (const group of state.groups) {
-          const box = element('div'); box.style.cssText = 'margin:0 0 8px;flex-shrink:0;';
-          const names = group.items.filter(item => item.selected).map(item => item.name);
-          const title = element('div', group.name);
-          title.style.cssText = 'font-size:12px;line-height:18px;color:#999;margin:0 0 4px;';
-          box.appendChild(title);
-          const summary = names.length ? '✓ ' + names[0] + (names.length > 1 ? ' 等' + names.length + '项' : '') : '未启用';
-          const button = element('button', summary + ' ▾');
-          button.style.cssText = 'display:block;width:100%;height:auto;min-height:32px;max-height:none;margin:0;padding:8px 12px;font-size:14px;font-weight:normal;line-height:18px;text-align:left;background:#262626;color:#ddd;border-radius:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-          button.disabled = !!pending;
-          button.addEventListener('click', () => { open = open === group.id ? null : group.id; draw(); });
-          box.appendChild(button);
-          if (open === group.id) for (const item of group.items) {
-            const option = element('button', (item.selected ? '✓ ' : '○ ') + item.name);
-            option.style.cssText = 'display:block;width:100%;height:auto;min-height:32px;max-height:none;margin:2px 0 0;padding:8px 12px;font-size:14px;font-weight:normal;line-height:18px;text-align:left;background:#333;color:#ddd;white-space:normal;';
-            option.disabled = !!pending || item.disabled || typeof item.id !== 'string';
-            option.addEventListener('click', () => {
-              if (pending) return;
-              pending = {group_id: group.id, widget_id: item.id, request_id: 'switch-' + Date.now() + '-' + (++serial)};
-              error = ''; draw();
-              timer = setTimeout(() => { pending = null; error = '未收到工作流切换确认，请检查连接'; draw(); }, 8000);
+        const ids = new Set(state.groups.map(group => group.id));
+        if (pending && !ids.has(pending.group_id)) { clearTimeout(timer); pending = null; }
+        for (const [id, entry] of controls) if (!ids.has(id)) { entry.widget.destroy(); entry.host.remove(); controls.delete(id); }
+        if (!state.groups.length) status.textContent = state.status || '当前工作流未配置模式开关';
+        else if (!response && !pending) status.textContent = '';
+        state.groups.forEach((group, index) => {
+          let entry = controls.get(group.id);
+          if (!entry) {
+            const host = document.createElement('div'); container.appendChild(host);
+            const widget = makeDropdown(host, index === 1 ? '⚙️' : '📂', group.items, id => {
+              if (pending || !state.groups.some(current => current.id === group.id && current.items.some(item => item.id === id))) return;
+              pending = {group_id: group.id, widget_id: id, request_id: 'switch-' + Date.now() + '-' + (++serial)};
+              status.textContent = '';
+              timer = setTimeout(() => { pending = null; status.textContent = '未收到工作流切换确认，请检查连接'; }, 8000);
               try { send(pending); }
-              catch { clearTimeout(timer); pending = null; error = '发送切换请求失败'; draw(); }
+              catch { clearTimeout(timer); pending = null; status.textContent = '发送切换请求失败'; }
             });
-            box.appendChild(option);
+            entry = {host, widget}; controls.set(group.id, entry);
           }
-          container.appendChild(box);
-        }
-        if (pending || error) container.appendChild(element('div', error || '正在等待工作流确认…'));
+          entry.widget.update(group.items);
+          container.appendChild(entry.host);
+        });
       }
       listeners.add(draw); draw();
-      return () => { clearTimeout(timer); listeners.delete(draw); };
+      return () => { clearTimeout(timer); listeners.delete(draw); for (const entry of controls.values()) entry.widget.destroy(); };
     }
   };
 })(globalThis);
