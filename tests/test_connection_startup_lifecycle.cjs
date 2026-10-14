@@ -168,7 +168,7 @@ test('Settings Apply opens WebView using the applied address, not an edited draf
  const f=fixture();await f.bootstrap();f.ctx.rt.set('HTTPS://Company.Test:443');await f.makeController()[7]();
  assert.equal(f.data.get(KEY),preference('https://company.test'));assert.equal(f.sockets.length,0);
  f.ctx.rt.set('https://unapplied.test');f.ctx.psOpenConnectionEditor();
- assert(f.events.filter(event=>event[0]==='navigate').every(event=>event[1]==='https://company.test'));
+ assert(f.events.filter(event=>event[0]==='navigate').every(event=>new URL(event[1]).hostname==='company.test' && new URL(event[1]).pathname==='/'));
  assert.equal(f.ctx.nativeOptions,undefined);
 });
 
@@ -258,4 +258,20 @@ test('an absent localStorage API is reported without interrupting explicit sessi
   f.ctx.rt.set('https://company.test'); await f.makeController()[7]();
   assert.equal(f.evaluate('psAppliedConnectionURL'), 'https://company.test'); assert.equal(f.sockets.length, 0);
   f.ctx.Nn('Connected', 'green'); assert.match(f.ctx.ko.value.status, /Connected.*could not be saved/);
+});
+
+test('same-address Apply really reloads WebView without changing saved address or transport',async()=>{
+ const url='https://company.test';const f=fixture({saved:preference(url)});await f.bootstrap();
+ const first=f.view.src;await f.makeController()[7]();const second=f.view.src;
+ assert.notEqual(second,first);assert.match(second,/ps_editor_reload=/);
+ assert.equal(new URL(second).hostname,'company.test');
+ assert.equal(f.data.get(KEY),preference(url));assert.equal(f.evaluate('psAppliedConnectionURL'),url);
+ await f.makeController()[7]();const third=f.view.src;assert.notEqual(third,second);
+ assert.equal([...new URL(third).searchParams.keys()].filter(key=>key==='ps_editor_reload').length,1);
+});
+
+test('refresh navigation preserves standalone query and workflow fragment',()=>{
+ const f=fixture();const url='https://company.test/?ps_transport=standalone#workflow';
+ const result=f.evaluate('psEditorNavigationURL('+JSON.stringify(url)+','+JSON.stringify(url)+')');
+ assert.equal(new URL(result).searchParams.get('ps_transport'),'standalone');assert.equal(new URL(result).hash,'#workflow');assert.match(result,/ps_editor_reload=/);
 });

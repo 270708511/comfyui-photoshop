@@ -44,7 +44,7 @@ let psAppliedConnectionURL=null, psConnectionStartupDone=false, psConnectionStar
 let psConnectionStorageWarning="";
 // Durable package marker, not a commit SHA. Diagnostics never initialize a bridge
 // or transport, and show only the selected origin and mode, never a URL path/query.
-const psConnectionUIBuild="connection-ui-20261014.5";
+const psConnectionUIBuild="connection-ui-20261014.6";
 let psLastConnectionDiagnosticURL;
 function psConnectionDiagnostic(url=psAppliedConnectionURL){
  const result={build:psConnectionUIBuild,origin:"none",mode:"unselected"};
@@ -132,15 +132,26 @@ function psWatchConnectionEditor(view){
   }
  });
 }
+let psEditorReloadSequence=0;
+function psBaseEditorURL(value){
+ if(typeof value!=="string")return "";
+ return value.replace(/([?&])ps_editor_reload=[^&#]*&?/g,(match,separator)=>match.endsWith("&")?separator:"").replace(/\?($|#)/,"$1");
+}
+function psEditorNavigationURL(value,current){
+ if(psEditorTargetKey(psBaseEditorURL(current))!==psEditorTargetKey(psBaseEditorURL(value)))return value;
+ const base=psBaseEditorURL(value),index=base.indexOf("#"),body=index<0?base:base.slice(0,index),hash=index<0?"":base.slice(index);
+ return body+(body.includes("?")?"&":"?")+"ps_editor_reload="+Date.now()+"-"+(++psEditorReloadSequence)+hash;
+}
 function psNavigateConnection(w,explicit=false){
  if(!explicit&&psTeam().nativeEnabled(w))return false;
  const x=document.querySelector("webview"),origin=psConnectionDiagnostic(w).origin;
  if(!x){psEditorStatus.set({text:"Editor unavailable. Open the Web panel and connect again. Requested: "+origin,color:"darkred"});return false;}
- psEditorRequest={view:x,url:w,origin,started:false,failed:false};
+ const navigationURL=psEditorNavigationURL(w,x.src);
+ psEditorRequest={view:x,url:navigationURL,origin,started:false,failed:false};
  psWatchConnectionEditor(x);
  psEditorStatus.set({text:"Editor requested: "+origin,color:"orange"});
  if(!psTeam().nativeEnabled(w))psTeam().watchView(x);
- x.src=w;ne.info("🌐 Webview navigation requested");return true;
+ x.src=navigationURL;ne.info("🌐 Webview navigation requested");return true;
 }
 function psConnectSelected(url,openEditor=false){
  // Vs claims its epoch synchronously before navigation or any asynchronous work.
