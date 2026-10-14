@@ -54,3 +54,19 @@ test('reconnect sends unchanged lists and legacy callback receives boolean toggl
   f.graph._nodes=[a];f.controller.refresh();const id=f.sent.get('Send_workflow')[0].id;f.sent.clear();f.controller.refresh(true);
   assert.equal(f.sent.get('Send_workflow')[0].id,id);f.controller.toggle('workflow',id);assert.equal(next,true);
 });
+
+test('shipped Preset dropdown reads live option.selected, including no selected item',()=>{
+  const bundle=fs.readFileSync(path.join(__dirname,'../ComfyUI Photoshop Team/dist/assets/index-B_-tWO9a.js'),'utf8');
+  const start=bundle.indexOf('function jg('),end=bundle.indexOf('class qi',start);
+  let mounted,observed,values;const queue=[];
+  const context=vm.createContext({js:()=>()=>{},Q:queue,yt:fn=>mounted=fn,
+    MutationObserver:class{constructor(fn){observed=fn}observe(){}disconnect(){}},
+    document:{addEventListener(){},removeEventListener(){},querySelectorAll:()=>[]}});
+  vm.runInContext(bundle.slice(start,end),context);
+  values=context.jg({}, {}, (index,value)=>values[index]=value);
+  let options=[{id:'one',textContent:'first',selected:false,hasAttribute:()=>false},
+    {id:'two',textContent:'second',selected:true,hasAttribute:()=>false}];
+  values[11]({querySelectorAll:()=>options});queue.forEach(fn=>fn());mounted();
+  assert.equal(values[2],'two');assert.match(values[0],/second/);
+  options=[];observed();assert.equal(values[2],null);assert.match(values[0],/未配置/);
+});
