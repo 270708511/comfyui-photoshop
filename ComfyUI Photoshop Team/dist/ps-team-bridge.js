@@ -378,7 +378,8 @@ globalThis.createPSTeamBridge = function (hooks) {
               jobs.delete(rid); if (active?.rid === rid && !busy) active = null;
             }
             const sessions = journal.connections[connectionKey]?.sessions || {};
-            for (const [sid, saved] of Object.entries(sessions)) if (sid !== session) saved.jobs = [];
+            const ownedSessions = new Set((m.resumable_refs || []).map(ref => ref.session_id));
+            for (const [sid, saved] of Object.entries(sessions)) if (sid !== session && ((account && saved.account === account) || ownedSessions.has(sid))) saved.jobs = [];
           }
           const readyOwner = owner();
           reportTarget = readyOwner;

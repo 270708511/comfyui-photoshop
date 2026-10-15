@@ -257,3 +257,24 @@ test('ready retention list prunes obsolete journal without painting the connecti
   assert.deepEqual(p.statuses.at(-1), ['Connected', 'green']);
   assert.equal(p.messages.filter(m => m.type === 'resume').at(-1).requests.length, 0);
 });
+
+test('a restored latest batch download 404 remains a real result error', async () => {
+  const s = server();
+  const e = frontend((url,args) => url === '/ps/team/latest'
+    ? response({latest: {session_id: 'SESSION', request_id: 'REQUEST'}, active_requests: []})
+    : /results\/\d+$/.test(url) ? response({detail: 'Missing latest image'},404) : s.fetch(url,args));
+  await e.emit({type: 'hello'}); await e.emit({type: 'resume', requests: ['REQUEST']}); await settle();
+  assert.ok(e.messages.some(m => m.type === 'error' && m.request_id === 'REQUEST'));
+  assert.equal(e.messages.filter(m => m.type === 'retired').length,0);
+});
+
+test('account retention never clears another account journal during login changes', async () => {
+  const p = panelHarness(); await p.connect('A');
+  await p.emit({type: 'ready', session_id: 'A', account_id: 'alice', resumable_requests: [], resumable_refs: []});
+  const alice = await p.capture();
+  await p.emit({type: 'ready', session_id: 'B', account_id: 'bob', resumable_requests: [], resumable_refs: []});
+  const bob = await p.capture();
+  assert.equal(p.storage.value.connections['https://team.example'].sessions.A.jobs[0][0],alice);
+  await p.emit({type: 'ready', session_id: 'A', account_id: 'alice', resumable_requests: [alice], resumable_refs: [{session_id:'A',request_id:alice}]});
+  assert.equal(p.storage.value.connections['https://team.example'].sessions.B.jobs[0][0],bob);
+});

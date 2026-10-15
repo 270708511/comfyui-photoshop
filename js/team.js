@@ -100,9 +100,10 @@ async function poll(rid) {
   if (!item || !current(rid, item) || item.inFlight) return;
   if (item.timer !== null) { clearTimeout(item.timer); item.timer = null; }
   item.inFlight = true;
-  let retryDelivery = false;
+  let retryDelivery = false, statusLookup = true;
   try {
     const state = await call(route(item.binding, rid), 'GET', undefined, item.binding);
+    statusLookup = false;
     if (!current(rid, item)) return;
     host('state', state, item.binding);
     if (state.state === 'uploaded') {
@@ -152,7 +153,7 @@ async function poll(rid) {
     if ([401, 403, 404, 410].includes(error.status)) forget(rid, item);
     if ([401, 403].includes(error.status) && item.binding === binding) {
       host('unbound', {error: String(error)}, item.binding); detach(item.binding);
-    } else if ((error.status === 410 || (item.recovering && error.status === 404))) host('retired', {request_id: rid}, item.binding);
+    } else if ((error.status === 410 || (item.recovering && statusLookup && rid !== item.binding.latestRequest && error.status === 404))) host('retired', {request_id: rid}, item.binding);
     else host('error', {request_id: rid, stage: 'result', error: String(error)}, item.binding);
   } finally {
     item.inFlight = false;
@@ -196,7 +197,8 @@ async function hello(m, origin) {
     const references = retention ? [...(retention.active_requests || []), ...(retention.latest?.request_id ? [retention.latest] : [])] : undefined;
     const retained = references?.map(ref => ref.request_id);
     if (references) binding.requestSessions = Object.fromEntries(references.map(ref => [ref.request_id, ref.session_id]));
-    host('ready', {version: VERSION, ...(retained ? {resumable_requests: retained, resumable_refs: references, latest: retention.latest} : {})}); receiveControl({photoshopConnected: true});
+    binding.latestRequest = retention?.latest?.request_id;
+    host('ready', {version: VERSION, account_id: retention?.account_id, ...(retained ? {resumable_requests: retained, resumable_refs: references, latest: retention.latest} : {})}); receiveControl({photoshopConnected: true});
   } catch (error) {
     if (token === handshakeVersion && binding && [401, 403].includes(error.status)) {
       host('unbound', {error: String(error)}); detach(binding);
@@ -237,7 +239,12 @@ export function startTeam(handler) {
         else {
           try { await acknowledge(m.request_id, item, m.index); }
           catch (error) {
-            if ((error.status === 410 || (item.recovering && error.status === 404))) { forget(m.request_id, item); host('retired', {request_id: m.request_id}, item.binding); }
+            let retired = error.status === 410;
+            if (!retired && item.recovering && m.request_id !== item.binding.latestRequest && error.status === 404) {
+              try { await call(route(item.binding, m.request_id), 'GET', undefined, item.binding); }
+              catch (statusError) { if ([404, 410].includes(statusError.status)) retired = true; else throw statusError; }
+            }
+            if (retired) { forget(m.request_id, item); host('retired', {request_id: m.request_id}, item.binding); }
             else throw error;
           } finally { poll(m.request_id); }
         }
